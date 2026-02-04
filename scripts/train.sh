@@ -1,18 +1,72 @@
 #!/bin/bash
-# Train DDPM model
+# Train DDPM model with GPU monitoring
 # Run from the root of the repository
-# Usage: bash scripts/train.sh
+# Usage: bash scripts/train.sh [OPTIONS]
+#
+# Options:
+#   --epochs N          Number of epochs (default: 100)
+#   --lr RATE           Learning rate (default: 2e-4)
+#   --timesteps N       Diffusion timesteps (default: 1000)
+#   --beta_schedule S   Beta schedule: linear or cosine (default: cosine)
+#   --sample_every N    Generate samples every N epochs (default: 10)
+#   --base_channels N   Base channel count (default: 32)
+#   --dropout F         Dropout rate (default: 0.1)
+#
+# This script launches two screen sessions:
+#   - ddpm-train: runs the training
+#   - ddpm-monitor: runs nvidia-smi for GPU monitoring
 
 set -e
 
-# Default configuration (override with environment variables)
-EPOCHS=${EPOCHS:-100}
-LEARNING_RATE=${LEARNING_RATE:-2e-4}
-TIMESTEPS=${TIMESTEPS:-1000}
-BETA_SCHEDULE=${BETA_SCHEDULE:-cosine}
-SAMPLE_EVERY=${SAMPLE_EVERY:-10}
-BASE_CHANNELS=${BASE_CHANNELS:-32}
-DROPOUT=${DROPOUT:-0.1}
+# Default configuration
+EPOCHS=100
+LEARNING_RATE="2e-4"
+TIMESTEPS=1000
+BETA_SCHEDULE="cosine"
+SAMPLE_EVERY=10
+BASE_CHANNELS=32
+DROPOUT=0.1
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --epochs)
+            EPOCHS="$2"
+            shift 2
+            ;;
+        --lr)
+            LEARNING_RATE="$2"
+            shift 2
+            ;;
+        --timesteps)
+            TIMESTEPS="$2"
+            shift 2
+            ;;
+        --beta_schedule)
+            BETA_SCHEDULE="$2"
+            shift 2
+            ;;
+        --sample_every)
+            SAMPLE_EVERY="$2"
+            shift 2
+            ;;
+        --base_channels)
+            BASE_CHANNELS="$2"
+            shift 2
+            ;;
+        --dropout)
+            DROPOUT="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+SESSION_TRAIN="ddpm-train"
+SESSION_MONITOR="ddpm-monitor"
 
 echo "=========================================="
 echo "DDPM Training on MNIST"
@@ -26,15 +80,35 @@ echo "Base Channels: $BASE_CHANNELS"
 echo "Dropout: $DROPOUT"
 echo "=========================================="
 
-python -m models.train \
-    --epochs $EPOCHS \
-    --lr $LEARNING_RATE \
-    --timesteps $TIMESTEPS \
-    --beta_schedule $BETA_SCHEDULE \
-    --sample_every $SAMPLE_EVERY \
-    --base_channels $BASE_CHANNELS \
-    --dropout $DROPOUT
+# Kill existing sessions if they exist
+screen -S $SESSION_TRAIN -X quit 2>/dev/null || true
+screen -S $SESSION_MONITOR -X quit 2>/dev/null || true
+
+# Start GPU monitoring session
+echo "Starting GPU monitor in screen session: $SESSION_MONITOR"
+screen -dmS $SESSION_MONITOR bash -c "watch -n 1 nvidia-smi"
+
+# Start training session
+echo "Starting training in screen session: $SESSION_TRAIN"
+screen -dmS $SESSION_TRAIN bash -c "
+    python -m models.train \
+        --epochs $EPOCHS \
+        --lr $LEARNING_RATE \
+        --timesteps $TIMESTEPS \
+        --beta_schedule $BETA_SCHEDULE \
+        --sample_every $SAMPLE_EVERY \
+        --base_channels $BASE_CHANNELS \
+        --dropout $DROPOUT
+    echo ''
+    echo 'Training complete! Press any key to exit.'
+    read -n 1
+"
 
 echo "=========================================="
-echo "Training complete!"
+echo "Screen sessions started!"
+echo ""
+echo "To attach to training:   screen -r $SESSION_TRAIN"
+echo "To attach to monitor:    screen -r $SESSION_MONITOR"
+echo "To detach from screen:   Ctrl+A, then D"
+echo "To list sessions:        screen -ls"
 echo "=========================================="

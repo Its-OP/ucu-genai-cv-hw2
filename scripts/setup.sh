@@ -13,6 +13,20 @@ echo "=========================================="
 echo "Setting up DDPM training environment"
 echo "=========================================="
 
+# Install screen if not available
+if ! command -v screen &> /dev/null; then
+    echo "Installing screen..."
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update && sudo apt-get install -y screen
+    elif command -v yum &> /dev/null; then
+        sudo yum install -y screen
+    else
+        echo "Warning: Could not install screen. Please install it manually."
+    fi
+else
+    echo "screen is already installed."
+fi
+
 # Clone repository
 if [ -d "$REPO_NAME" ]; then
     echo "Repository already exists. Pulling latest changes..."
@@ -44,5 +58,5 @@ echo "=========================================="
 echo "To start training:"
 echo "  cd $REPO_NAME"
 echo "  conda activate $CONDA_ENV"
-echo "  bash scripts/train.sh"
+echo "  bash scripts/train.sh --epochs 100"
 echo "=========================================="
