@@ -1,27 +1,9 @@
 # Core ML framework
 torch
 torchvision
-torchaudio
 
-# Diffusion models
-diffusers
-accelerate
-transformers
-
-# Image processing
-pillow
-opencv-python
-
-# Scientific computing
-numpy
-scipy
+# Visualization
 matplotlib
-
-# Jupyter support
-jupyter
-ipywidgets
 
 # Utilities
 tqdm
-einops
-safetensors
