@@ -35,7 +35,7 @@ def parse_args():
     parser.add_argument('--timesteps', type=int, default=1000)
     parser.add_argument('--beta_schedule', type=str, default='cosine', choices=['linear', 'cosine'])
     parser.add_argument('--sample_every', type=int, default=10)
-    parser.add_argument('--base_channels', type=int, default=64)
+    parser.add_argument('--base_channels', type=int, default=32)
     parser.add_argument('--dropout', type=float, default=0.1)
     return parser.parse_args()
 
@@ -49,21 +49,32 @@ def get_device():
     return torch.device('cpu')
 
 
-def train_epoch(model, ddpm, optimizer, loader, device):
+def train_epoch(model, ddpm, optimizer, loader, device, scaler=None):
     """Train for one epoch."""
     model.train()
     total_loss = 0
+    use_amp = scaler is not None
 
     for x, _ in tqdm(loader, desc='Training', leave=False):
         x = x.to(device)
         t = torch.randint(0, ddpm.timesteps, (x.shape[0],), device=device)
 
-        loss = ddpm.p_losses(model, x, t)
-
         optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
+
+        if use_amp:
+            # Mixed precision training for CUDA
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                loss = ddpm.p_losses(model, x, t)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss = ddpm.p_losses(model, x, t)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
 
         total_loss += loss.item()
 
@@ -71,7 +82,7 @@ def train_epoch(model, ddpm, optimizer, loader, device):
 
 
 @torch.no_grad()
-def evaluate(model, ddpm, loader, device):
+def evaluate(model, ddpm, loader, device, use_amp=False):
     """Evaluate on test set."""
     model.eval()
     total_loss = 0
@@ -79,7 +90,13 @@ def evaluate(model, ddpm, loader, device):
     for x, _ in loader:
         x = x.to(device)
         t = torch.randint(0, ddpm.timesteps, (x.shape[0],), device=device)
-        loss = ddpm.p_losses(model, x, t)
+
+        if use_amp:
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                loss = ddpm.p_losses(model, x, t)
+        else:
+            loss = ddpm.p_losses(model, x, t)
+
         total_loss += loss.item()
 
     return total_loss / len(loader)
@@ -113,14 +130,21 @@ def main():
     model = UNet(
         image_channels=1,
         base_channels=args.base_channels,
-        channel_multipliers=(1, 2, 4, 4),
+        channel_multipliers=(1, 2, 2, 2),
         num_residual_blocks=2,
-        attention_resolutions=(8, 4),
+        attention_resolutions=(4,),
         dropout=args.dropout,
     ).to(device)
 
     num_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {num_params:,}")
+
+    # CUDA optimizations: compile model and enable mixed precision
+    scaler = None
+    if device.type == 'cuda':
+        model = torch.compile(model)
+        scaler = torch.amp.GradScaler('cuda')
+        print("CUDA optimizations enabled: torch.compile() + mixed precision (float16)")
 
     # Initialize DDPM
     ddpm = DDPM(timesteps=args.timesteps, beta_schedule=args.beta_schedule).to(device)
@@ -132,12 +156,13 @@ def main():
     # Training loop
     train_losses, eval_losses = [], []
     start_time = time.time()
+    use_amp = device.type == 'cuda'
 
     for epoch in range(args.epochs):
         epoch_start = time.time()
 
-        train_loss = train_epoch(model, ddpm, optimizer, train_loader, device)
-        eval_loss = evaluate(model, ddpm, test_loader, device)
+        train_loss = train_epoch(model, ddpm, optimizer, train_loader, device, scaler)
+        eval_loss = evaluate(model, ddpm, test_loader, device, use_amp)
 
         train_losses.append(train_loss)
         eval_losses.append(eval_loss)
