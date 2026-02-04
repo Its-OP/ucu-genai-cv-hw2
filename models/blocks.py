@@ -98,26 +98,26 @@ class AttentionBlock(nn.Module):
         self.scale = channels ** -0.5
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = x.shape
+        batch_size, num_channels, height, width = x.shape
         residual = x
 
         x = self.norm(x)
 
         # Compute Q, K, V
-        qkv = self.qkv(x)
-        qkv = qkv.reshape(B, 3, C, H * W)
-        q, k, v = qkv[:, 0], qkv[:, 1], qkv[:, 2]
+        query_key_value = self.qkv(x)
+        query_key_value = query_key_value.reshape(batch_size, 3, num_channels, height * width)
+        query, key, value = query_key_value[:, 0], query_key_value[:, 1], query_key_value[:, 2]
 
         # Attention: softmax(QK^T / sqrt(d)) V
-        # q, k, v: (B, C, H*W)
-        attn = torch.bmm(q.transpose(1, 2), k) * self.scale  # (B, H*W, H*W)
-        attn = F.softmax(attn, dim=-1)
+        # query, key, value: (batch_size, num_channels, height*width)
+        attention_weights = torch.bmm(query.transpose(1, 2), key) * self.scale
+        attention_weights = F.softmax(attention_weights, dim=-1)
 
-        out = torch.bmm(v, attn.transpose(1, 2))  # (B, C, H*W)
-        out = out.reshape(B, C, H, W)
+        output = torch.bmm(value, attention_weights.transpose(1, 2))
+        output = output.reshape(batch_size, num_channels, height, width)
 
-        out = self.proj(out)
-        return out + residual
+        output = self.proj(output)
+        return output + residual
 
 
 class Downsample(nn.Module):

@@ -113,8 +113,8 @@ def main():
     model = UNet(
         image_channels=1,
         base_channels=args.base_channels,
-        channel_mults=(1, 2, 4, 4),
-        num_res_blocks=2,
+        channel_multipliers=(1, 2, 4, 4),
+        num_residual_blocks=2,
         attention_resolutions=(8, 4),
         dropout=args.dropout,
     ).to(device)

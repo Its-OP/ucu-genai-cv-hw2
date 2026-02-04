@@ -25,8 +25,8 @@ class UNet(nn.Module):
         self,
         image_channels: int = 1,
         base_channels: int = 64,
-        channel_mults: tuple = (1, 2, 4, 4),
-        num_res_blocks: int = 2,
+        channel_multipliers: tuple = (1, 2, 4, 4),
+        num_residual_blocks: int = 2,
         attention_resolutions: tuple = (8, 4),
         dropout: float = 0.1,
     ):
@@ -34,145 +34,143 @@ class UNet(nn.Module):
 
         self.image_channels = image_channels
         self.base_channels = base_channels
-        self.num_res_blocks = num_res_blocks
-        time_emb_dim = base_channels * 4
+        self.num_residual_blocks = num_residual_blocks
+        time_embedding_dim = base_channels * 4
 
         # Time embedding MLP
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbeddings(base_channels),
-            nn.Linear(base_channels, time_emb_dim),
+            nn.Linear(base_channels, time_embedding_dim),
             nn.SiLU(),
-            nn.Linear(time_emb_dim, time_emb_dim),
+            nn.Linear(time_embedding_dim, time_embedding_dim),
         )
 
         # Initial convolution
-        self.init_conv = nn.Conv2d(image_channels, base_channels, kernel_size=3, padding=1)
+        self.initial_convolution = nn.Conv2d(image_channels, base_channels, kernel_size=3, padding=1)
 
         # Track channels at each resolution for skip connections
-        # channels[i] = output channels after processing at resolution i
-        channels = [base_channels * m for m in channel_mults]
-        resolutions = [32, 16, 8, 4]
+        channels_per_level = [base_channels * multiplier for multiplier in channel_multipliers]
+        spatial_resolutions = [32, 16, 8, 4]
 
         # Encoder
-        self.down_blocks = nn.ModuleList()
-        self.down_samples = nn.ModuleList()
+        self.encoder_blocks = nn.ModuleList()
+        self.downsample_layers = nn.ModuleList()
 
-        in_ch = base_channels
-        for level, mult in enumerate(channel_mults):
-            out_ch = base_channels * mult
-            res = resolutions[level]
-            use_attn = res in attention_resolutions
+        input_channels = base_channels
+        for level, multiplier in enumerate(channel_multipliers):
+            output_channels = base_channels * multiplier
+            resolution = spatial_resolutions[level]
+            use_attention = resolution in attention_resolutions
 
             level_blocks = nn.ModuleList()
-            for i in range(num_res_blocks):
-                level_blocks.append(ResidualBlock(in_ch, out_ch, time_emb_dim, dropout))
-                if use_attn:
-                    level_blocks.append(AttentionBlock(out_ch))
-                in_ch = out_ch
+            for _ in range(num_residual_blocks):
+                level_blocks.append(ResidualBlock(input_channels, output_channels, time_embedding_dim, dropout))
+                if use_attention:
+                    level_blocks.append(AttentionBlock(output_channels))
+                input_channels = output_channels
 
-            self.down_blocks.append(level_blocks)
+            self.encoder_blocks.append(level_blocks)
 
-            if level < len(channel_mults) - 1:
-                self.down_samples.append(Downsample(out_ch))
+            if level < len(channel_multipliers) - 1:
+                self.downsample_layers.append(Downsample(output_channels))
             else:
-                self.down_samples.append(None)
+                self.downsample_layers.append(None)
 
         # Bottleneck
-        mid_ch = channels[-1]
-        self.mid_block1 = ResidualBlock(mid_ch, mid_ch, time_emb_dim, dropout)
-        self.mid_attn = AttentionBlock(mid_ch)
-        self.mid_block2 = ResidualBlock(mid_ch, mid_ch, time_emb_dim, dropout)
+        middle_channels = channels_per_level[-1]
+        self.middle_block1 = ResidualBlock(middle_channels, middle_channels, time_embedding_dim, dropout)
+        self.middle_attention = AttentionBlock(middle_channels)
+        self.middle_block2 = ResidualBlock(middle_channels, middle_channels, time_embedding_dim, dropout)
 
         # Decoder
-        self.up_blocks = nn.ModuleList()
-        self.up_samples = nn.ModuleList()
+        self.decoder_blocks = nn.ModuleList()
+        self.upsample_layers = nn.ModuleList()
 
-        reversed_channels = list(reversed(channels))
-        reversed_resolutions = list(reversed(resolutions))
+        reversed_channels = list(reversed(channels_per_level))
+        reversed_resolutions = list(reversed(spatial_resolutions))
 
-        in_ch = mid_ch
-        for level in range(len(channel_mults)):
-            out_ch = reversed_channels[level]
-            res = reversed_resolutions[level]
-            use_attn = res in attention_resolutions
+        input_channels = middle_channels
+        for level in range(len(channel_multipliers)):
+            output_channels = reversed_channels[level]
+            resolution = reversed_resolutions[level]
+            use_attention = resolution in attention_resolutions
 
             level_blocks = nn.ModuleList()
-            for i in range(num_res_blocks):
+            for _ in range(num_residual_blocks):
                 # Each ResBlock receives skip connection (concatenated)
-                skip_ch = reversed_channels[level]
-                level_blocks.append(ResidualBlock(in_ch + skip_ch, out_ch, time_emb_dim, dropout))
-                if use_attn:
-                    level_blocks.append(AttentionBlock(out_ch))
-                in_ch = out_ch
+                skip_channels = reversed_channels[level]
+                level_blocks.append(ResidualBlock(input_channels + skip_channels, output_channels, time_embedding_dim, dropout))
+                if use_attention:
+                    level_blocks.append(AttentionBlock(output_channels))
+                input_channels = output_channels
 
-            self.up_blocks.append(level_blocks)
+            self.decoder_blocks.append(level_blocks)
 
-            if level < len(channel_mults) - 1:
-                next_ch = reversed_channels[level + 1]
-                self.up_samples.append(Upsample(out_ch))
-                in_ch = out_ch
+            if level < len(channel_multipliers) - 1:
+                self.upsample_layers.append(Upsample(output_channels))
+                input_channels = output_channels
             else:
-                self.up_samples.append(None)
+                self.upsample_layers.append(None)
 
         # Output layers
-        self.out_norm = nn.GroupNorm(32, base_channels)
-        self.out_conv = nn.Conv2d(base_channels, image_channels, kernel_size=3, padding=1)
+        self.output_norm = nn.GroupNorm(32, base_channels)
+        self.output_convolution = nn.Conv2d(base_channels, image_channels, kernel_size=3, padding=1)
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
         """
         Forward pass predicting noise ε_θ(x_t, t).
 
         Args:
-            x: Noisy image x_t, shape (B, C, 28, 28)
-            t: Timestep, shape (B,)
+            x: Noisy image x_t, shape (batch_size, channels, 28, 28)
+            timestep: Timestep, shape (batch_size,)
 
         Returns:
-            Predicted noise, shape (B, C, 28, 28)
+            Predicted noise, shape (batch_size, channels, 28, 28)
         """
         # Pad 28x28 to 32x32
         x = F.pad(x, (2, 2, 2, 2), mode='reflect')
 
         # Time embedding
-        t_emb = self.time_mlp(t)
+        time_embedding = self.time_mlp(timestep)
 
-        # Initial conv
-        h = self.init_conv(x)
+        # Initial convolution
+        hidden = self.initial_convolution(x)
 
         # Encoder - collect skip connections
-        skips = []
-        for level_blocks, downsample in zip(self.down_blocks, self.down_samples):
+        skip_connections = []
+        for level_blocks, downsample in zip(self.encoder_blocks, self.downsample_layers):
             for block in level_blocks:
                 if isinstance(block, ResidualBlock):
-                    h = block(h, t_emb)
-                    skips.append(h)
+                    hidden = block(hidden, time_embedding)
+                    skip_connections.append(hidden)
                 else:
-                    h = block(h)
+                    hidden = block(hidden)
             if downsample is not None:
-                h = downsample(h)
+                hidden = downsample(hidden)
 
         # Bottleneck
-        h = self.mid_block1(h, t_emb)
-        h = self.mid_attn(h)
-        h = self.mid_block2(h, t_emb)
+        hidden = self.middle_block1(hidden, time_embedding)
+        hidden = self.middle_attention(hidden)
+        hidden = self.middle_block2(hidden, time_embedding)
 
         # Decoder - use skip connections in reverse
-        for level_blocks, upsample in zip(self.up_blocks, self.up_samples):
+        for level_blocks, upsample in zip(self.decoder_blocks, self.upsample_layers):
             for block in level_blocks:
                 if isinstance(block, ResidualBlock):
-                    skip = skips.pop()
-                    h = torch.cat([h, skip], dim=1)
-                    h = block(h, t_emb)
+                    skip = skip_connections.pop()
+                    hidden = torch.cat([hidden, skip], dim=1)
+                    hidden = block(hidden, time_embedding)
                 else:
-                    h = block(h)
+                    hidden = block(hidden)
             if upsample is not None:
-                h = upsample(h)
+                hidden = upsample(hidden)
 
         # Output
-        h = self.out_norm(h)
-        h = F.silu(h)
-        h = self.out_conv(h)
+        hidden = self.output_norm(hidden)
+        hidden = F.silu(hidden)
+        hidden = self.output_convolution(hidden)
 
         # Crop back to 28x28
-        h = h[:, :, 2:-2, 2:-2]
+        hidden = hidden[:, :, 2:-2, 2:-2]
 
-        return h
+        return hidden
