@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 
 import torch
-from torch.optim import Adam
+from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 
@@ -43,6 +43,8 @@ def parse_args():
 def get_device():
     """Get best available device."""
     if torch.cuda.is_available():
+        # Enable TensorFloat32 for faster matmul on Ampere+ GPUs
+        torch.set_float32_matmul_precision('high')
         return torch.device('cuda')
     elif torch.backends.mps.is_available():
         return torch.device('mps')
@@ -150,8 +152,10 @@ def main():
     ddpm = DDPM(timesteps=args.timesteps, beta_schedule=args.beta_schedule).to(device)
 
     # Optimizer and scheduler
-    optimizer = Adam(model.parameters(), lr=args.lr)
-    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
+    # AdamW with weight decay for better generalization
+    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    # Cosine annealing: lr decays from initial to 0 over T_max epochs
+    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
 
     # Training loop
     train_losses, eval_losses = [], []
