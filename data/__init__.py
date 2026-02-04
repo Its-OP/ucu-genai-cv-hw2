@@ -2,7 +2,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 DATA_ROOT = "./data/datasets"
-BATCH_SIZE = 128
+BATCH_SIZE = 256
 
 transform = transforms.Compose([
     transforms.ToTensor(),
