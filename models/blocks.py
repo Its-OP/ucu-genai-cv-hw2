@@ -109,11 +109,17 @@ class AttentionBlock(nn.Module):
         query, key, value = query_key_value[:, 0], query_key_value[:, 1], query_key_value[:, 2]
 
         # Attention: softmax(QK^T / sqrt(d)) V
-        # query, key, value: (batch_size, num_channels, height*width)
+        # query, key: (batch_size, num_channels, height*width)
+        # After transpose: query.T is (batch_size, height*width, num_channels)
+        # QK^T: (batch_size, height*width, height*width)
         attention_weights = torch.bmm(query.transpose(1, 2), key) * self.scale
         attention_weights = F.softmax(attention_weights, dim=-1)
 
-        output = torch.bmm(value, attention_weights.transpose(1, 2))
+        # attention_weights: (batch_size, height*width, height*width)
+        # value: (batch_size, num_channels, height*width) -> value.T: (batch_size, height*width, num_channels)
+        # output = attention_weights @ value.T -> (batch_size, height*width, num_channels)
+        # Final transpose to get (batch_size, num_channels, height*width)
+        output = torch.bmm(attention_weights, value.transpose(1, 2)).transpose(1, 2)
         output = output.reshape(batch_size, num_channels, height, width)
 
         output = self.proj(output)
