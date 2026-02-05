@@ -10,8 +10,9 @@
 #   --timesteps N       Diffusion timesteps (default: 1000)
 #   --beta_schedule S   Beta schedule: linear or cosine (default: cosine)
 #   --sample_every N    Generate samples every N epochs (default: 10)
-#   --base_channels N   Base channel count (default: 64, use 128 for powerful GPUs)
-#   --dropout F         Dropout rate (default: 0.1)
+#   --base_channels N   Base channel count (default: 64)
+#
+# Note: base_channels must be 64 as the UNet architecture has hardcoded channel sizes
 #
 # This script launches two screen sessions:
 #   - ddpm-train: runs the training
@@ -27,7 +28,6 @@ TIMESTEPS=1000
 BETA_SCHEDULE="cosine"
 SAMPLE_EVERY=10
 BASE_CHANNELS=64
-DROPOUT=0.1
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -80,6 +80,7 @@ echo "Timesteps: $TIMESTEPS"
 echo "Beta Schedule: $BETA_SCHEDULE"
 echo "Sample Every: $SAMPLE_EVERY epochs"
 echo "Base Channels: $BASE_CHANNELS"
+echo "Model: ~12.8M parameters"
 echo "=========================================="
 
 # Kill existing sessions if they exist

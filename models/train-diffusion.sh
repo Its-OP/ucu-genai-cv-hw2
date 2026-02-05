@@ -5,13 +5,13 @@
 set -e
 
 # Default configuration
+# Note: base_channels must be 64 as the UNet architecture has hardcoded channel sizes
 EPOCHS=${EPOCHS:-100}
 LEARNING_RATE=${LEARNING_RATE:-2e-4}
 TIMESTEPS=${TIMESTEPS:-1000}
 BETA_SCHEDULE=${BETA_SCHEDULE:-cosine}
 SAMPLE_EVERY=${SAMPLE_EVERY:-10}
-BASE_CHANNELS=${BASE_CHANNELS:-32}
-DROPOUT=${DROPOUT:-0.1}
+BASE_CHANNELS=${BASE_CHANNELS:-64}
 
 echo "=========================================="
 echo "DDPM Training on MNIST"
@@ -22,7 +22,6 @@ echo "Timesteps: $TIMESTEPS"
 echo "Beta Schedule: $BETA_SCHEDULE"
 echo "Sample Every: $SAMPLE_EVERY epochs"
 echo "Base Channels: $BASE_CHANNELS"
-echo "Dropout: $DROPOUT"
 echo "=========================================="
 
 python -m models.train \
@@ -31,8 +30,7 @@ python -m models.train \
     --timesteps $TIMESTEPS \
     --beta_schedule $BETA_SCHEDULE \
     --sample_every $SAMPLE_EVERY \
-    --base_channels $BASE_CHANNELS \
-    --dropout $DROPOUT
+    --base_channels $BASE_CHANNELS
 
 echo "=========================================="
 echo "Training complete!"

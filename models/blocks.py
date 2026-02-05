@@ -21,18 +21,23 @@ class TransformerPositionalEmbedding(nn.Module):
         super(TransformerPositionalEmbedding, self).__init__()
         assert dimension % 2 == 0, "Embedding dimension must be even"
         self.dimension = dimension
-        self.pe_matrix = torch.zeros(max_timesteps, dimension)
+
+        # Pre-compute positional embeddings
+        pe_matrix = torch.zeros(max_timesteps, dimension)
 
         even_indices = torch.arange(0, self.dimension, 2)
         log_term = torch.log(torch.tensor(10000.0)) / self.dimension
         div_term = torch.exp(even_indices * -log_term)
 
         timesteps = torch.arange(max_timesteps).unsqueeze(1)
-        self.pe_matrix[:, 0::2] = torch.sin(timesteps * div_term)
-        self.pe_matrix[:, 1::2] = torch.cos(timesteps * div_term)
+        pe_matrix[:, 0::2] = torch.sin(timesteps * div_term)
+        pe_matrix[:, 1::2] = torch.cos(timesteps * div_term)
+
+        # Register as buffer so it moves with the model to GPU/MPS
+        self.register_buffer('pe_matrix', pe_matrix)
 
     def forward(self, timestep):
-        return self.pe_matrix[timestep].to(timestep.device)
+        return self.pe_matrix[timestep]
 
 
 class ConvBlock(nn.Module):
