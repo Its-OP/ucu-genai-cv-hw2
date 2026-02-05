@@ -39,7 +39,6 @@ def parse_args():
     parser.add_argument('--sample_every', type=int, default=10)
     parser.add_argument('--base_channels', type=int, default=64,
                         help='Base channel count (use 64-128 for powerful GPUs)')
-    parser.add_argument('--dropout', type=float, default=0.1)
     return parser.parse_args()
 
 
@@ -130,20 +129,15 @@ def main():
         'beta_schedule': args.beta_schedule,
         'sample_every': args.sample_every,
         'base_channels': args.base_channels,
-        'dropout': args.dropout,
         'device': str(device),
         'batch_size': train_loader.batch_size,
     }
     log_config(exp_dir, config)
 
-    # Initialize model
+    # Initialize model (new simplified UNet based on reference implementation)
     model = UNet(
         image_channels=1,
         base_channels=args.base_channels,
-        channel_multipliers=(1, 2, 2, 2),
-        num_residual_blocks=2,
-        attention_resolutions=(4,),
-        dropout=args.dropout,
     ).to(device)
 
     num_params = sum(p.numel() for p in model.parameters())

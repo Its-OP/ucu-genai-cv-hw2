@@ -1,122 +1,108 @@
+"""
+U-Net architecture for DDPM noise prediction.
+
+Based on: https://github.com/mattroz/diffusion-ddpm/blob/main/src/model/unet.py
+Adapted for MNIST (28x28, 1 channel).
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from .blocks import (
-    SinusoidalPositionEmbeddings,
-    ResidualBlock,
-    AttentionBlock,
-    Downsample,
-    Upsample,
+    TransformerPositionalEmbedding,
+    ConvDownBlock,
+    ConvUpBlock,
+    AttentionDownBlock,
+    AttentionUpBlock,
 )
 
 
 class UNet(nn.Module):
     """
-    U-Net architecture for DDPM noise prediction.
+    U-Net architecture for DDPM as described in the DDPM paper, Appendix B.
 
     Architecture for 28x28 MNIST (padded to 32x32):
-        - Encoder: 32->16->8->4 with increasing channels
-        - Bottleneck at 4x4 with attention
-        - Decoder: 4->8->16->32 with skip connections
-        - Attention at 8x8 and 4x4 resolutions
+        Spatial:  32x32 -> 16x16 -> 8x8 -> 4x4 (bottleneck) -> 8x8 -> 16x16 -> 32x32
+        Channels: 64 -> 64 -> 128 -> 256 -> 256 -> 128 -> 64
+
+    Skip connections are collected after each encoder block (before downsampling)
+    and used in the decoder (after upsampling, before processing).
     """
-    def __init__(
-        self,
-        image_channels: int = 1,
-        base_channels: int = 64,
-        channel_multipliers: tuple = (1, 2, 4, 4),
-        num_residual_blocks: int = 2,
-        attention_resolutions: tuple = (8, 4),
-        dropout: float = 0.1,
-    ):
+    def __init__(self, image_channels=1, base_channels=64):
         super().__init__()
 
-        self.image_channels = image_channels
-        self.base_channels = base_channels
-        self.num_residual_blocks = num_residual_blocks
-        time_embedding_dim = base_channels * 4
+        time_embedding_channels = base_channels * 4  # 256
 
-        # Time embedding MLP
-        self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbeddings(base_channels),
-            nn.Linear(base_channels, time_embedding_dim),
-            nn.SiLU(),
-            nn.Linear(time_embedding_dim, time_embedding_dim),
+        # Time embedding: sinusoidal positional encoding + MLP
+        self.positional_encoding = nn.Sequential(
+            TransformerPositionalEmbedding(dimension=base_channels),
+            nn.Linear(base_channels, time_embedding_channels),
+            nn.GELU(),
+            nn.Linear(time_embedding_channels, time_embedding_channels),
         )
 
-        # Initial convolution
-        self.initial_convolution = nn.Conv2d(image_channels, base_channels, kernel_size=3, padding=1)
+        # Initial convolution: image_channels -> base_channels
+        self.initial_conv = nn.Conv2d(
+            in_channels=image_channels,
+            out_channels=base_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
 
-        # Track channels at each resolution for skip connections
-        channels_per_level = [base_channels * multiplier for multiplier in channel_multipliers]
-        spatial_resolutions = [32, 16, 8, 4]
+        # Encoder (downsampling path)
+        # 32x32 -> 16x16 -> 8x8 -> 4x4
+        self.downsample_blocks = nn.ModuleList([
+            ConvDownBlock(
+                in_channels=64, out_channels=64, num_layers=2,
+                time_embedding_channels=time_embedding_channels, downsample=True
+            ),  # 32 -> 16
+            ConvDownBlock(
+                in_channels=64, out_channels=128, num_layers=2,
+                time_embedding_channels=time_embedding_channels, downsample=True
+            ),  # 16 -> 8
+            AttentionDownBlock(
+                in_channels=128, out_channels=256, num_layers=2,
+                time_embedding_channels=time_embedding_channels,
+                num_attention_heads=4, downsample=True
+            ),  # 8 -> 4, with attention
+        ])
 
-        # Encoder
-        self.encoder_blocks = nn.ModuleList()
-        self.downsample_layers = nn.ModuleList()
+        # Bottleneck at 4x4 with attention
+        self.bottleneck = AttentionDownBlock(
+            in_channels=256, out_channels=256, num_layers=2,
+            time_embedding_channels=time_embedding_channels,
+            num_attention_heads=4, downsample=False
+        )
 
-        input_channels = base_channels
-        for level, multiplier in enumerate(channel_multipliers):
-            output_channels = base_channels * multiplier
-            resolution = spatial_resolutions[level]
-            use_attention = resolution in attention_resolutions
+        # Decoder (upsampling path)
+        # 4x4 -> 8x8 -> 16x16 -> 32x32
+        # Note: input channels include skip connection concatenation
+        self.upsample_blocks = nn.ModuleList([
+            ConvUpBlock(
+                in_channels=256 + 256, out_channels=256, num_layers=2,
+                time_embedding_channels=time_embedding_channels, upsample=True
+            ),  # 4 -> 8
+            AttentionUpBlock(
+                in_channels=256 + 128, out_channels=128, num_layers=2,
+                time_embedding_channels=time_embedding_channels,
+                num_attention_heads=4, upsample=True
+            ),  # 8 -> 16, with attention
+            ConvUpBlock(
+                in_channels=128 + 64, out_channels=64, num_layers=2,
+                time_embedding_channels=time_embedding_channels, upsample=True
+            ),  # 16 -> 32
+        ])
 
-            level_blocks = nn.ModuleList()
-            for _ in range(num_residual_blocks):
-                level_blocks.append(ResidualBlock(input_channels, output_channels, time_embedding_dim, dropout))
-                if use_attention:
-                    level_blocks.append(AttentionBlock(output_channels))
-                input_channels = output_channels
+        # Output convolution: base_channels -> image_channels
+        # Note: final skip connection adds base_channels, so input is 64 + 64 = 128
+        self.output_conv = nn.Sequential(
+            nn.GroupNorm(num_channels=64 + 64, num_groups=32),
+            nn.SiLU(),
+            nn.Conv2d(64 + 64, image_channels, kernel_size=3, padding=1),
+        )
 
-            self.encoder_blocks.append(level_blocks)
-
-            if level < len(channel_multipliers) - 1:
-                self.downsample_layers.append(Downsample(output_channels))
-            else:
-                self.downsample_layers.append(None)
-
-        # Bottleneck
-        middle_channels = channels_per_level[-1]
-        self.middle_block1 = ResidualBlock(middle_channels, middle_channels, time_embedding_dim, dropout)
-        self.middle_attention = AttentionBlock(middle_channels)
-        self.middle_block2 = ResidualBlock(middle_channels, middle_channels, time_embedding_dim, dropout)
-
-        # Decoder
-        self.decoder_blocks = nn.ModuleList()
-        self.upsample_layers = nn.ModuleList()
-
-        reversed_channels = list(reversed(channels_per_level))
-        reversed_resolutions = list(reversed(spatial_resolutions))
-
-        input_channels = middle_channels
-        for level in range(len(channel_multipliers)):
-            output_channels = reversed_channels[level]
-            resolution = reversed_resolutions[level]
-            use_attention = resolution in attention_resolutions
-
-            level_blocks = nn.ModuleList()
-            for _ in range(num_residual_blocks):
-                # Each ResBlock receives skip connection (concatenated)
-                skip_channels = reversed_channels[level]
-                level_blocks.append(ResidualBlock(input_channels + skip_channels, output_channels, time_embedding_dim, dropout))
-                if use_attention:
-                    level_blocks.append(AttentionBlock(output_channels))
-                input_channels = output_channels
-
-            self.decoder_blocks.append(level_blocks)
-
-            if level < len(channel_multipliers) - 1:
-                self.upsample_layers.append(Upsample(output_channels))
-                input_channels = output_channels
-            else:
-                self.upsample_layers.append(None)
-
-        # Output layers
-        self.output_norm = nn.GroupNorm(32, base_channels)
-        self.output_convolution = nn.Conv2d(base_channels, image_channels, kernel_size=3, padding=1)
-
-    def forward(self, x: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
+    def forward(self, x, timestep):
         """
         Forward pass predicting noise ε_θ(x_t, t).
 
@@ -127,50 +113,39 @@ class UNet(nn.Module):
         Returns:
             Predicted noise, shape (batch_size, channels, 28, 28)
         """
-        # Pad 28x28 to 32x32
+        # Pad 28x28 to 32x32 for clean downsampling
         x = F.pad(x, (2, 2, 2, 2), mode='reflect')
 
         # Time embedding
-        time_embedding = self.time_mlp(timestep)
+        time_encoded = self.positional_encoding(timestep)
 
         # Initial convolution
-        hidden = self.initial_convolution(x)
+        x = self.initial_conv(x)
 
-        # Encoder - collect skip connections
-        skip_connections = []
-        for level_blocks, downsample in zip(self.encoder_blocks, self.downsample_layers):
-            for block in level_blocks:
-                if isinstance(block, ResidualBlock):
-                    hidden = block(hidden, time_embedding)
-                    skip_connections.append(hidden)
-                else:
-                    hidden = block(hidden)
-            if downsample is not None:
-                hidden = downsample(hidden)
+        # Store skip connections: initial features + after each encoder block
+        skip_connections = [x]
+
+        # Encoder: collect skip connections after each block
+        for block in self.downsample_blocks:
+            x = block(x, time_encoded)
+            skip_connections.append(x)
+
+        # Reverse skip connections for decoder (last encoder output first)
+        skip_connections = list(reversed(skip_connections))
 
         # Bottleneck
-        hidden = self.middle_block1(hidden, time_embedding)
-        hidden = self.middle_attention(hidden)
-        hidden = self.middle_block2(hidden, time_embedding)
+        x = self.bottleneck(x, time_encoded)
 
-        # Decoder - use skip connections in reverse
-        for level_blocks, upsample in zip(self.decoder_blocks, self.upsample_layers):
-            for block in level_blocks:
-                if isinstance(block, ResidualBlock):
-                    skip = skip_connections.pop()
-                    hidden = torch.cat([hidden, skip], dim=1)
-                    hidden = block(hidden, time_embedding)
-                else:
-                    hidden = block(hidden)
-            if upsample is not None:
-                hidden = upsample(hidden)
+        # Decoder: concatenate skip connections before each block
+        for i, block in enumerate(self.upsample_blocks):
+            x = torch.cat([x, skip_connections[i]], dim=1)
+            x = block(x, time_encoded)
 
-        # Output
-        hidden = self.output_norm(hidden)
-        hidden = F.silu(hidden)
-        hidden = self.output_convolution(hidden)
+        # Final skip connection (from initial conv) and output
+        x = torch.cat([x, skip_connections[-1]], dim=1)
+        x = self.output_conv(x)
 
-        # Crop back to 28x28
-        hidden = hidden[:, :, 2:-2, 2:-2]
+        # Crop 32x32 back to 28x28
+        x = x[:, :, 2:-2, 2:-2]
 
-        return hidden
+        return x
