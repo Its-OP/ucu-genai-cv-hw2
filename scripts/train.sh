@@ -60,10 +60,6 @@ while [[ $# -gt 0 ]]; do
             BASE_CHANNELS="$2"
             shift 2
             ;;
-        --dropout)
-            DROPOUT="$2"
-            shift 2
-            ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -84,7 +80,6 @@ echo "Timesteps: $TIMESTEPS"
 echo "Beta Schedule: $BETA_SCHEDULE"
 echo "Sample Every: $SAMPLE_EVERY epochs"
 echo "Base Channels: $BASE_CHANNELS"
-echo "Dropout: $DROPOUT"
 echo "=========================================="
 
 # Kill existing sessions if they exist
@@ -105,8 +100,7 @@ screen -dmS $SESSION_TRAIN bash -c "
         --timesteps $TIMESTEPS \
         --beta_schedule $BETA_SCHEDULE \
         --sample_every $SAMPLE_EVERY \
-        --base_channels $BASE_CHANNELS \
-        --dropout $DROPOUT
+        --base_channels $BASE_CHANNELS
     echo ''
     echo 'Training complete! Press any key to exit.'
     read -n 1
