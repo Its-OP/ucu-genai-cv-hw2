@@ -6,10 +6,11 @@
 # Options:
 #   --epochs N          Number of epochs (default: 100)
 #   --lr RATE           Learning rate (default: 2e-4)
+#   --batch_size N      Batch size (default: 512, use 1024+ for powerful GPUs)
 #   --timesteps N       Diffusion timesteps (default: 1000)
 #   --beta_schedule S   Beta schedule: linear or cosine (default: cosine)
 #   --sample_every N    Generate samples every N epochs (default: 10)
-#   --base_channels N   Base channel count (default: 32)
+#   --base_channels N   Base channel count (default: 64, use 128 for powerful GPUs)
 #   --dropout F         Dropout rate (default: 0.1)
 #
 # This script launches two screen sessions:
@@ -18,13 +19,14 @@
 
 set -e
 
-# Default configuration
+# Default configuration (optimized for powerful GPUs like 5090)
 EPOCHS=100
 LEARNING_RATE="2e-4"
+BATCH_SIZE=512
 TIMESTEPS=1000
 BETA_SCHEDULE="cosine"
 SAMPLE_EVERY=10
-BASE_CHANNELS=32
+BASE_CHANNELS=64
 DROPOUT=0.1
 
 # Parse command line arguments
@@ -36,6 +38,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --lr)
             LEARNING_RATE="$2"
+            shift 2
+            ;;
+        --batch_size)
+            BATCH_SIZE="$2"
             shift 2
             ;;
         --timesteps)
@@ -73,6 +79,7 @@ echo "DDPM Training on MNIST"
 echo "=========================================="
 echo "Epochs: $EPOCHS"
 echo "Learning Rate: $LEARNING_RATE"
+echo "Batch Size: $BATCH_SIZE"
 echo "Timesteps: $TIMESTEPS"
 echo "Beta Schedule: $BETA_SCHEDULE"
 echo "Sample Every: $SAMPLE_EVERY epochs"
@@ -94,6 +101,7 @@ screen -dmS $SESSION_TRAIN bash -c "
     python -m models.train \
         --epochs $EPOCHS \
         --lr $LEARNING_RATE \
+        --batch_size $BATCH_SIZE \
         --timesteps $TIMESTEPS \
         --beta_schedule $BETA_SCHEDULE \
         --sample_every $SAMPLE_EVERY \

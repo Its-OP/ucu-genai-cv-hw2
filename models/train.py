@@ -13,7 +13,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 
-from data import train_loader, test_loader
+from data import get_train_loader, get_test_loader
 from models.unet import UNet
 from models.ddpm import DDPM
 from models.utils import (
@@ -32,10 +32,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train DDPM on MNIST')
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--lr', type=float, default=2e-4)
+    parser.add_argument('--batch_size', type=int, default=None,
+                        help='Batch size (overrides data module default)')
     parser.add_argument('--timesteps', type=int, default=1000)
     parser.add_argument('--beta_schedule', type=str, default='cosine', choices=['linear', 'cosine'])
     parser.add_argument('--sample_every', type=int, default=10)
-    parser.add_argument('--base_channels', type=int, default=32)
+    parser.add_argument('--base_channels', type=int, default=64,
+                        help='Base channel count (use 64-128 for powerful GPUs)')
     parser.add_argument('--dropout', type=float, default=0.1)
     return parser.parse_args()
 
@@ -108,6 +111,11 @@ def main():
     args = parse_args()
     device = get_device()
     print(f"Using device: {device}")
+
+    # Create data loaders (with optional batch size override)
+    train_loader = get_train_loader(args.batch_size)
+    test_loader = get_test_loader(args.batch_size)
+    print(f"Batch size: {train_loader.batch_size}")
 
     # Setup experiment folder
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

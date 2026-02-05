@@ -7,3 +7,6 @@ matplotlib
 
 # Utilities
 tqdm
+
+# Testing
+pytest
