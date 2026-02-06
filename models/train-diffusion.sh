@@ -5,7 +5,7 @@
 set -e
 
 # Default configuration
-# Note: base_channels must be 64 as the UNet architecture has hardcoded channel sizes
+# Note: base_channels=64 recommended for MNIST (channel multipliers: 1, 2, 4, 4)
 EPOCHS=${EPOCHS:-100}
 LEARNING_RATE=${LEARNING_RATE:-1e-4}
 TIMESTEPS=${TIMESTEPS:-1000}

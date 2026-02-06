@@ -141,9 +141,6 @@ class TestUNetConfigurations:
     def test_default_base_channels(self, device, seed):
         """Should work with default base channel count (64)."""
         # Arrange
-        # Note: The current UNet architecture has hardcoded channel sizes (64, 128, 256)
-        # that don't scale with base_channels parameter. The base_channels parameter
-        # only affects the time embedding dimension.
         model = UNet(
             image_channels=1,
             base_channels=64,
@@ -278,7 +275,7 @@ class TestUNetArchitecture:
     """Tests for UNet architectural properties."""
 
     def test_model_has_encoder_decoder_structure(self, device, seed):
-        """Model should have encoder (downsample) and decoder (upsample) blocks."""
+        """Model should have encoder and decoder blocks."""
         # Arrange
         model = UNet(
             image_channels=1,
@@ -286,10 +283,10 @@ class TestUNetArchitecture:
         ).to(device)
 
         # Assert
-        assert hasattr(model, 'downsample_blocks'), "Model should have downsample_blocks"
-        assert hasattr(model, 'upsample_blocks'), "Model should have upsample_blocks"
+        assert hasattr(model, 'encoder_blocks'), "Model should have encoder_blocks"
+        assert hasattr(model, 'decoder_blocks'), "Model should have decoder_blocks"
         assert hasattr(model, 'bottleneck'), "Model should have bottleneck"
-        assert len(model.downsample_blocks) == len(model.upsample_blocks)
+        assert len(model.encoder_blocks) == len(model.decoder_blocks)
 
     def test_model_has_time_embedding(self, device, seed):
         """Model should have time embedding mechanism."""

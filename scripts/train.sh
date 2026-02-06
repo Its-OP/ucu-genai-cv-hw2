@@ -12,7 +12,7 @@
 #   --sample_every N    Generate samples every N epochs (default: 10)
 #   --base_channels N   Base channel count (default: 64)
 #
-# Note: base_channels must be 64 as the UNet architecture has hardcoded channel sizes
+# Note: base_channels=64 recommended for MNIST (channel multipliers: 1, 2, 4, 4)
 #
 # This script launches two screen sessions:
 #   - ddpm-train: runs the training

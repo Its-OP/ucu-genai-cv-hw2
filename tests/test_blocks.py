@@ -363,7 +363,7 @@ class TestConvDownBlock:
         time_emb = torch.randn(4, 256, device=device)
 
         # Act
-        output = block(x, time_emb)
+        output, intermediates = block(x, time_emb)
 
         # Assert
         assert output.shape == (4, 128, 8, 8)
@@ -379,10 +379,30 @@ class TestConvDownBlock:
         time_emb = torch.randn(4, 256, device=device)
 
         # Act
-        output = block(x, time_emb)
+        output, intermediates = block(x, time_emb)
 
         # Assert
         assert output.shape == (4, 128, 16, 16)
+
+    def test_intermediates_count_matches_num_layers(self, device, seed):
+        """Should return one intermediate per ResNet block."""
+        # Arrange
+        num_layers = 2
+        block = ConvDownBlock(
+            in_channels=64, out_channels=128, num_layers=num_layers,
+            time_embedding_channels=256, downsample=True
+        )
+        x = torch.randn(2, 64, 16, 16, device=device)
+        time_emb = torch.randn(2, 256, device=device)
+
+        # Act
+        output, intermediates = block(x, time_emb)
+
+        # Assert
+        assert len(intermediates) == num_layers
+        # Intermediates should be at pre-downsample resolution
+        for intermediate in intermediates:
+            assert intermediate.shape == (2, 128, 16, 16)
 
 
 class TestConvUpBlock:
@@ -391,15 +411,17 @@ class TestConvUpBlock:
     def test_output_shape_with_upsample(self, device, seed):
         """Output should have doubled spatial dims when upsample=True."""
         # Arrange
+        skip_channels = 64
         block = ConvUpBlock(
-            in_channels=128, out_channels=64, num_layers=2,
-            time_embedding_channels=256, upsample=True
+            in_channels=128, out_channels=64, skip_channels=skip_channels,
+            num_layers=2, time_embedding_channels=256, upsample=True
         )
         x = torch.randn(4, 128, 8, 8, device=device)
         time_emb = torch.randn(4, 256, device=device)
+        skip_connections = [torch.randn(4, skip_channels, 8, 8, device=device) for _ in range(2)]
 
         # Act
-        output = block(x, time_emb)
+        output = block(x, time_emb, skip_connections)
 
         # Assert
         assert output.shape == (4, 64, 16, 16)
@@ -407,15 +429,17 @@ class TestConvUpBlock:
     def test_output_shape_without_upsample(self, device, seed):
         """Output should preserve spatial dims when upsample=False."""
         # Arrange
+        skip_channels = 64
         block = ConvUpBlock(
-            in_channels=128, out_channels=64, num_layers=2,
-            time_embedding_channels=256, upsample=False
+            in_channels=128, out_channels=64, skip_channels=skip_channels,
+            num_layers=2, time_embedding_channels=256, upsample=False
         )
         x = torch.randn(4, 128, 8, 8, device=device)
         time_emb = torch.randn(4, 256, device=device)
+        skip_connections = [torch.randn(4, skip_channels, 8, 8, device=device) for _ in range(2)]
 
         # Act
-        output = block(x, time_emb)
+        output = block(x, time_emb, skip_connections)
 
         # Assert
         assert output.shape == (4, 64, 8, 8)
@@ -435,7 +459,7 @@ class TestAttentionDownBlock:
         time_emb = torch.randn(2, 256, device=device)
 
         # Act
-        output = block(x, time_emb)
+        output, intermediates = block(x, time_emb)
 
         # Assert
         assert output.shape == (2, 128, 8, 8)
@@ -451,10 +475,29 @@ class TestAttentionDownBlock:
         time_emb = torch.randn(2, 256, device=device)
 
         # Act
-        output = block(x, time_emb)
+        output, intermediates = block(x, time_emb)
 
         # Assert
         assert output.shape == (2, 128, 16, 16)
+
+    def test_intermediates_count_matches_num_layers(self, device, seed):
+        """Should return one intermediate per ResNet+Attention pair."""
+        # Arrange
+        num_layers = 2
+        block = AttentionDownBlock(
+            in_channels=64, out_channels=128, num_layers=num_layers,
+            time_embedding_channels=256, num_attention_heads=4, downsample=True
+        )
+        x = torch.randn(2, 64, 16, 16, device=device)
+        time_emb = torch.randn(2, 256, device=device)
+
+        # Act
+        output, intermediates = block(x, time_emb)
+
+        # Assert
+        assert len(intermediates) == num_layers
+        for intermediate in intermediates:
+            assert intermediate.shape == (2, 128, 16, 16)
 
 
 class TestAttentionUpBlock:
@@ -463,15 +506,18 @@ class TestAttentionUpBlock:
     def test_output_shape_with_upsample(self, device, seed):
         """Output should have doubled spatial dims when upsample=True."""
         # Arrange
+        skip_channels = 64
         block = AttentionUpBlock(
-            in_channels=128, out_channels=64, num_layers=2,
-            time_embedding_channels=256, num_attention_heads=4, upsample=True
+            in_channels=128, out_channels=64, skip_channels=skip_channels,
+            num_layers=2, time_embedding_channels=256,
+            num_attention_heads=4, upsample=True
         )
         x = torch.randn(2, 128, 8, 8, device=device)
         time_emb = torch.randn(2, 256, device=device)
+        skip_connections = [torch.randn(2, skip_channels, 8, 8, device=device) for _ in range(2)]
 
         # Act
-        output = block(x, time_emb)
+        output = block(x, time_emb, skip_connections)
 
         # Assert
         assert output.shape == (2, 64, 16, 16)
@@ -479,15 +525,18 @@ class TestAttentionUpBlock:
     def test_output_shape_without_upsample(self, device, seed):
         """Output should preserve spatial dims when upsample=False."""
         # Arrange
+        skip_channels = 64
         block = AttentionUpBlock(
-            in_channels=128, out_channels=64, num_layers=2,
-            time_embedding_channels=256, num_attention_heads=4, upsample=False
+            in_channels=128, out_channels=64, skip_channels=skip_channels,
+            num_layers=2, time_embedding_channels=256,
+            num_attention_heads=4, upsample=False
         )
         x = torch.randn(2, 128, 8, 8, device=device)
         time_emb = torch.randn(2, 256, device=device)
+        skip_connections = [torch.randn(2, skip_channels, 8, 8, device=device) for _ in range(2)]
 
         # Act
-        output = block(x, time_emb)
+        output = block(x, time_emb, skip_connections)
 
         # Assert
         assert output.shape == (2, 64, 8, 8)

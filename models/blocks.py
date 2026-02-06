@@ -178,13 +178,17 @@ class UpsampleBlock(nn.Module):
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
 
     def forward(self, x):
-        x = F.interpolate(x, scale_factor=2.0, mode='bilinear', align_corners=True)
+        x = F.interpolate(x, scale_factor=2, mode='nearest')
         return self.conv(x)
 
 
 class ConvDownBlock(nn.Module):
     """
     Encoder block: multiple ResNet blocks followed by optional downsampling.
+
+    Returns (output, intermediates) where intermediates is a list of
+    per-ResBlock outputs collected BEFORE downsampling, used as skip
+    connections for the decoder.
     """
     def __init__(self, in_channels, out_channels, num_layers, time_embedding_channels, num_groups=32, downsample=True):
         super(ConvDownBlock, self).__init__()
@@ -200,32 +204,45 @@ class ConvDownBlock(nn.Module):
         self.downsample = DownsampleBlock(out_channels, out_channels) if downsample else None
 
     def forward(self, x, time_embedding):
+        intermediates = []
         for resnet_block in self.resnet_blocks:
             x = resnet_block(x, time_embedding)
+            intermediates.append(x)
         if self.downsample:
             x = self.downsample(x)
-        return x
+        return x, intermediates
 
 
 class ConvUpBlock(nn.Module):
     """
     Decoder block: multiple ResNet blocks followed by optional upsampling.
+
+    Each ResBlock receives a skip connection from the encoder (popped from
+    the skip_connections list) and concatenates it with the current features
+    before processing.
     """
-    def __init__(self, in_channels, out_channels, num_layers, time_embedding_channels, num_groups=32, upsample=True):
+    def __init__(self, in_channels, out_channels, skip_channels, num_layers,
+                 time_embedding_channels, num_groups=32, upsample=True):
         super(ConvUpBlock, self).__init__()
 
         resnet_blocks = []
         for i in range(num_layers):
-            input_ch = in_channels if i == 0 else out_channels
+            # Every ResBlock receives a skip connection via concatenation
+            # First block: in_channels (from prev level) + skip_channels
+            # Subsequent blocks: out_channels (from this level) + skip_channels
+            current_channels = in_channels if i == 0 else out_channels
             resnet_blocks.append(
-                ResNetBlock(input_ch, out_channels, time_embedding_channels, num_groups)
+                ResNetBlock(current_channels + skip_channels, out_channels,
+                            time_embedding_channels, num_groups)
             )
 
         self.resnet_blocks = nn.ModuleList(resnet_blocks)
         self.upsample = UpsampleBlock(out_channels, out_channels) if upsample else None
 
-    def forward(self, x, time_embedding):
+    def forward(self, x, time_embedding, skip_connections):
         for resnet_block in self.resnet_blocks:
+            skip = skip_connections.pop()
+            x = torch.cat([x, skip], dim=1)
             x = resnet_block(x, time_embedding)
         if self.upsample:
             x = self.upsample(x)
@@ -234,7 +251,11 @@ class ConvUpBlock(nn.Module):
 
 class AttentionDownBlock(nn.Module):
     """
-    Encoder block with self-attention: ResNet + Attention blocks, then optional downsampling.
+    Encoder block with self-attention: alternating ResNet + Attention blocks,
+    then optional downsampling.
+
+    Returns (output, intermediates) where intermediates is a list of
+    per-ResBlock outputs (after attention) collected BEFORE downsampling.
     """
     def __init__(self, in_channels, out_channels, num_layers, time_embedding_channels,
                  num_attention_heads=4, num_groups=32, downsample=True):
@@ -256,28 +277,36 @@ class AttentionDownBlock(nn.Module):
         self.downsample = DownsampleBlock(out_channels, out_channels) if downsample else None
 
     def forward(self, x, time_embedding):
+        intermediates = []
         for resnet_block, attention_block in zip(self.resnet_blocks, self.attention_blocks):
             x = resnet_block(x, time_embedding)
             x = attention_block(x)
+            intermediates.append(x)
         if self.downsample:
             x = self.downsample(x)
-        return x
+        return x, intermediates
 
 
 class AttentionUpBlock(nn.Module):
     """
-    Decoder block with self-attention: ResNet + Attention blocks, then optional upsampling.
+    Decoder block with self-attention: alternating ResNet + Attention blocks,
+    then optional upsampling.
+
+    Each ResBlock receives a skip connection from the encoder (popped from
+    the skip_connections list) and concatenates it before processing.
     """
-    def __init__(self, in_channels, out_channels, num_layers, time_embedding_channels,
-                 num_attention_heads=4, num_groups=32, upsample=True):
+    def __init__(self, in_channels, out_channels, skip_channels, num_layers,
+                 time_embedding_channels, num_attention_heads=4, num_groups=32, upsample=True):
         super(AttentionUpBlock, self).__init__()
 
         resnet_blocks = []
         attention_blocks = []
         for i in range(num_layers):
-            input_ch = in_channels if i == 0 else out_channels
+            # Every ResBlock receives a skip connection via concatenation
+            current_channels = in_channels if i == 0 else out_channels
             resnet_blocks.append(
-                ResNetBlock(input_ch, out_channels, time_embedding_channels, num_groups)
+                ResNetBlock(current_channels + skip_channels, out_channels,
+                            time_embedding_channels, num_groups)
             )
             attention_blocks.append(
                 SelfAttentionBlock(out_channels, num_attention_heads, num_groups)
@@ -287,8 +316,10 @@ class AttentionUpBlock(nn.Module):
         self.attention_blocks = nn.ModuleList(attention_blocks)
         self.upsample = UpsampleBlock(out_channels, out_channels) if upsample else None
 
-    def forward(self, x, time_embedding):
+    def forward(self, x, time_embedding, skip_connections):
         for resnet_block, attention_block in zip(self.resnet_blocks, self.attention_blocks):
+            skip = skip_connections.pop()
+            x = torch.cat([x, skip], dim=1)
             x = resnet_block(x, time_embedding)
             x = attention_block(x)
         if self.upsample:
