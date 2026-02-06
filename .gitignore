@@ -3,3 +3,4 @@ CLAUDE.md
 .idea/*
 __pycache__
 experiments
+.DS_store

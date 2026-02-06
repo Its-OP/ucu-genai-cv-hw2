@@ -1,10 +1,13 @@
 """
-DDPM Sample Generation Script.
+Diffusion Model Sample Generation Script (DDPM / DDIM).
 
-Loads a trained checkpoint and generates MNIST digit samples.
+Loads a trained checkpoint and generates MNIST digit samples using either
+DDPM (Ho et al. 2020) or DDIM (Song et al. 2020) sampling.
 
 Usage:
-    python -m models.generate --checkpoint experiments/.../checkpoints/checkpoint_final.pt
+    python -m models.generate --checkpoint path/to/checkpoint.pt
+    python -m models.generate --checkpoint path/to/checkpoint.pt --mode ddim --ddim_steps 50
+    python -m models.generate --checkpoint path/to/checkpoint.pt --mode ddim --ddim_steps 100 --eta 0.5
     python -m models.generate --checkpoint path/to/checkpoint.pt --num_samples 25 --nrow 5
     python -m models.generate --checkpoint path/to/checkpoint.pt --show_denoising
 """
@@ -16,6 +19,7 @@ import torch
 
 from models.unet import UNet
 from models.ddpm import DDPM
+from models.ddim import DDIMSampler
 from models.utils import save_images, save_denoising_progression
 
 
@@ -33,6 +37,12 @@ def parse_args():
                         help='Also save denoising progression visualization')
     parser.add_argument('--device', type=str, default=None,
                         help='Force device (cuda, mps, cpu). Auto-detects if not specified.')
+    parser.add_argument('--mode', type=str, default='ddpm', choices=['ddpm', 'ddim'],
+                        help='Sampling mode: ddpm (full T steps) or ddim (fewer steps)')
+    parser.add_argument('--ddim_steps', type=int, default=50,
+                        help='Number of DDIM sampling steps (only used with --mode ddim)')
+    parser.add_argument('--eta', type=float, default=0.0,
+                        help='DDIM stochasticity: 0.0=deterministic, 1.0=DDPM-like (only with --mode ddim)')
     return parser.parse_args()
 
 
@@ -136,12 +146,21 @@ def main():
 
     model, ddpm, config = load_checkpoint(args.checkpoint, device)
 
-    # Generate samples
+    # Select sampling method: DDPM (full T steps) or DDIM (fewer steps)
     image_channels = config['image_channels']
     sample_shape = (args.num_samples, image_channels, 28, 28)
-    print(f"\nGenerating {args.num_samples} samples...")
 
-    samples = ddpm.p_sample_loop(model, sample_shape)
+    if args.mode == 'ddim':
+        ddim_sampler = DDIMSampler(
+            ddpm, ddim_timesteps=args.ddim_steps, eta=args.eta,
+        ).to(device)
+        print(f"\nGenerating {args.num_samples} samples using DDIM "
+              f"({args.ddim_steps} steps, eta={args.eta})...")
+        samples = ddim_sampler.ddim_sample_loop(model, sample_shape)
+    else:
+        print(f"\nGenerating {args.num_samples} samples using DDPM "
+              f"({ddpm.timesteps} steps)...")
+        samples = ddpm.p_sample_loop(model, sample_shape)
 
     # Save grid of all samples
     grid_path = f'{args.output_dir}/grid.png'
@@ -155,11 +174,16 @@ def main():
     # Optionally generate denoising progression
     if args.show_denoising:
         print("\nGenerating denoising progression...")
-        # Generate a single sample with intermediate steps
         progression_shape = (1, image_channels, 28, 28)
-        _, intermediates = ddpm.p_sample_loop(
-            model, progression_shape, return_intermediates=True,
-        )
+
+        if args.mode == 'ddim':
+            _, intermediates = ddim_sampler.ddim_sample_loop(
+                model, progression_shape, return_intermediates=True,
+            )
+        else:
+            _, intermediates = ddpm.p_sample_loop(
+                model, progression_shape, return_intermediates=True,
+            )
 
         progression_path = f'{args.output_dir}/denoising_progression.png'
         save_denoising_progression(intermediates, progression_path)
