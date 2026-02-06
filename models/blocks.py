@@ -41,17 +41,22 @@ class TransformerPositionalEmbedding(nn.Module):
 
 
 class ConvBlock(nn.Module):
-    """Single convolution block: Conv -> GroupNorm -> SiLU."""
+    """
+    Single convolution block with pre-normalization: GroupNorm -> SiLU -> Conv.
+
+    Pre-normalization ensures stable gradient flow, especially when time embeddings
+    are added between consecutive ConvBlocks in ResNetBlock.
+    """
     def __init__(self, in_channels, out_channels, num_groups=32):
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.norm = nn.GroupNorm(num_groups, out_channels)
+        self.norm = nn.GroupNorm(num_groups, in_channels)
         self.act = nn.SiLU()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
 
     def forward(self, x):
-        x = self.conv(x)
         x = self.norm(x)
         x = self.act(x)
+        x = self.conv(x)
         return x
 
 
@@ -60,9 +65,9 @@ class ResNetBlock(nn.Module):
     Wide ResNet block with time embedding injection.
 
     Structure:
-        1. ConvBlock (in_channels -> out_channels)
+        1. ConvBlock: GroupNorm -> SiLU -> Conv (in_channels -> out_channels)
         2. Add time embedding (projected to out_channels)
-        3. ConvBlock (out_channels -> out_channels)
+        3. ConvBlock: GroupNorm -> SiLU -> Conv (out_channels -> out_channels)
         4. Residual connection (with 1x1 conv if channels differ)
     """
     def __init__(self, in_channels, out_channels, time_embedding_channels, num_groups=32):
@@ -93,11 +98,14 @@ class ResNetBlock(nn.Module):
 
 class SelfAttentionBlock(nn.Module):
     """
-    Multi-head self-attention block.
+    Multi-head self-attention block with pre-normalization.
     Based on "Attention Is All You Need" (Vaswani et al., 2017)
 
     Formula:
         Attention(Q, K, V) = softmax(QK^T / sqrt(d_k)) V
+
+    Pre-normalization is applied before Q, K, V projections to stabilize
+    attention score magnitudes and improve training dynamics.
     """
     def __init__(self, in_channels, num_heads=4, num_groups=32, embedding_dim=None):
         super(SelfAttentionBlock, self).__init__()
@@ -106,18 +114,23 @@ class SelfAttentionBlock(nn.Module):
         self.embedding_dim = embedding_dim
         self.head_dim = embedding_dim // num_heads
 
+        # Pre-normalization: normalize input before attention computation
+        self.norm = nn.GroupNorm(num_channels=in_channels, num_groups=num_groups)
+
         self.query_projection = nn.Linear(in_channels, embedding_dim)
         self.key_projection = nn.Linear(in_channels, embedding_dim)
         self.value_projection = nn.Linear(in_channels, embedding_dim)
 
-        self.output_projection = nn.Linear(embedding_dim, embedding_dim)
-        self.norm = nn.GroupNorm(num_channels=embedding_dim, num_groups=num_groups)
+        self.output_projection = nn.Linear(embedding_dim, in_channels)
 
     def forward(self, input_tensor):
         batch_size, channels, height, width = input_tensor.shape
 
+        # Pre-normalization before attention
+        x = self.norm(input_tensor)
+
         # Reshape to (batch, height*width, channels) for attention
-        x = input_tensor.view(batch_size, channels, height * width).transpose(1, 2)
+        x = x.view(batch_size, channels, height * width).transpose(1, 2)
 
         # Project to Q, K, V
         queries = self.query_projection(x)
@@ -130,6 +143,7 @@ class SelfAttentionBlock(nn.Module):
         values = values.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
 
         # Scaled dot-product attention
+        # score(Q, K) = QK^T / sqrt(d_k)
         scale = self.head_dim ** -0.5
         attention_scores = torch.matmul(queries, keys.transpose(-1, -2)) * scale
         attention_weights = torch.softmax(attention_scores, dim=-1)
@@ -141,10 +155,10 @@ class SelfAttentionBlock(nn.Module):
 
         # Output projection and reshape back to image format
         output = self.output_projection(attention_output)
-        output = output.transpose(1, 2).view(batch_size, self.embedding_dim, height, width)
+        output = output.transpose(1, 2).view(batch_size, channels, height, width)
 
-        # Residual connection with normalization
-        return self.norm(output + input_tensor)
+        # Residual connection (no post-normalization)
+        return output + input_tensor
 
 
 class DownsampleBlock(nn.Module):

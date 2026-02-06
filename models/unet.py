@@ -23,15 +23,20 @@ class UNet(nn.Module):
 
     Architecture for 28x28 MNIST (padded to 32x32):
         Spatial:  32x32 -> 16x16 -> 8x8 -> 4x4 (bottleneck) -> 8x8 -> 16x16 -> 32x32
-        Channels: 64 -> 64 -> 128 -> 256 -> 256 -> 128 -> 64
+        Channels: C -> C -> 2C -> 4C -> 4C -> 2C -> C  (where C = base_channels)
 
-    Skip connections are collected after each encoder block (before downsampling)
-    and used in the decoder (after upsampling, before processing).
+    Skip connections are collected after each encoder block and concatenated
+    with decoder features before each decoder block.
     """
     def __init__(self, image_channels=1, base_channels=64):
         super().__init__()
 
-        time_embedding_channels = base_channels * 4  # 256
+        # Channel progression: C -> C -> 2C -> 4C (encoder), mirrored in decoder
+        channel_1 = base_channels          # e.g. 64
+        channel_2 = base_channels * 2      # e.g. 128
+        channel_3 = base_channels * 4      # e.g. 256
+        time_embedding_channels = base_channels * 4
+        num_groups = min(32, base_channels)
 
         # Time embedding: sinusoidal positional encoding + MLP
         self.positional_encoding = nn.Sequential(
@@ -54,25 +59,27 @@ class UNet(nn.Module):
         # 32x32 -> 16x16 -> 8x8 -> 4x4
         self.downsample_blocks = nn.ModuleList([
             ConvDownBlock(
-                in_channels=64, out_channels=64, num_layers=2,
-                time_embedding_channels=time_embedding_channels, downsample=True
+                in_channels=channel_1, out_channels=channel_1, num_layers=2,
+                time_embedding_channels=time_embedding_channels,
+                num_groups=num_groups, downsample=True
             ),  # 32 -> 16
             ConvDownBlock(
-                in_channels=64, out_channels=128, num_layers=2,
-                time_embedding_channels=time_embedding_channels, downsample=True
+                in_channels=channel_1, out_channels=channel_2, num_layers=2,
+                time_embedding_channels=time_embedding_channels,
+                num_groups=num_groups, downsample=True
             ),  # 16 -> 8
             AttentionDownBlock(
-                in_channels=128, out_channels=256, num_layers=2,
+                in_channels=channel_2, out_channels=channel_3, num_layers=2,
                 time_embedding_channels=time_embedding_channels,
-                num_attention_heads=4, downsample=True
+                num_attention_heads=4, num_groups=num_groups, downsample=True
             ),  # 8 -> 4, with attention
         ])
 
         # Bottleneck at 4x4 with attention
         self.bottleneck = AttentionDownBlock(
-            in_channels=256, out_channels=256, num_layers=2,
+            in_channels=channel_3, out_channels=channel_3, num_layers=2,
             time_embedding_channels=time_embedding_channels,
-            num_attention_heads=4, downsample=False
+            num_attention_heads=4, num_groups=num_groups, downsample=False
         )
 
         # Decoder (upsampling path)
@@ -80,26 +87,28 @@ class UNet(nn.Module):
         # Note: input channels include skip connection concatenation
         self.upsample_blocks = nn.ModuleList([
             ConvUpBlock(
-                in_channels=256 + 256, out_channels=256, num_layers=2,
-                time_embedding_channels=time_embedding_channels, upsample=True
+                in_channels=channel_3 + channel_3, out_channels=channel_3, num_layers=2,
+                time_embedding_channels=time_embedding_channels,
+                num_groups=num_groups, upsample=True
             ),  # 4 -> 8
             AttentionUpBlock(
-                in_channels=256 + 128, out_channels=128, num_layers=2,
+                in_channels=channel_3 + channel_2, out_channels=channel_2, num_layers=2,
                 time_embedding_channels=time_embedding_channels,
-                num_attention_heads=4, upsample=True
+                num_attention_heads=4, num_groups=num_groups, upsample=True
             ),  # 8 -> 16, with attention
             ConvUpBlock(
-                in_channels=128 + 64, out_channels=64, num_layers=2,
-                time_embedding_channels=time_embedding_channels, upsample=True
+                in_channels=channel_2 + channel_1, out_channels=channel_1, num_layers=2,
+                time_embedding_channels=time_embedding_channels,
+                num_groups=num_groups, upsample=True
             ),  # 16 -> 32
         ])
 
         # Output convolution: base_channels -> image_channels
-        # Note: final skip connection adds base_channels, so input is 64 + 64 = 128
+        # Final skip connection adds base_channels, so input is channel_1 + channel_1
         self.output_conv = nn.Sequential(
-            nn.GroupNorm(num_channels=64 + 64, num_groups=32),
+            nn.GroupNorm(num_channels=channel_1 + channel_1, num_groups=num_groups),
             nn.SiLU(),
-            nn.Conv2d(64 + 64, image_channels, kernel_size=3, padding=1),
+            nn.Conv2d(channel_1 + channel_1, image_channels, kernel_size=3, padding=1),
         )
 
     def forward(self, x, timestep):

@@ -16,8 +16,8 @@ transform = transforms.Compose([
     transforms.Normalize((0.5,), (0.5,)),
 ])
 
-train_dataset = datasets.MNIST(root=DATA_ROOT, train=True, download=False, transform=transform)
-test_dataset = datasets.MNIST(root=DATA_ROOT, train=False, download=False, transform=transform)
+train_dataset = datasets.MNIST(root=DATA_ROOT, train=True, download=True, transform=transform)
+test_dataset = datasets.MNIST(root=DATA_ROOT, train=False, download=True, transform=transform)
 
 
 def get_train_loader(batch_size: int = None) -> DataLoader:
@@ -46,8 +46,3 @@ def get_test_loader(batch_size: int = None) -> DataLoader:
         pin_memory=PIN_MEMORY,
         persistent_workers=num_workers > 0,
     )
-
-
-# Default loaders for backward compatibility
-train_loader = get_train_loader()
-test_loader = get_test_loader()
