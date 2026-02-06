@@ -81,7 +81,13 @@ def parse_args():
     parser.add_argument('--timesteps', type=int, default=1000)
     parser.add_argument('--sample_every', type=int, default=10)
     parser.add_argument('--base_channels', type=int, default=32,
-                        help='Base channel count (32 → ~3M params, 64 → ~26M params)')
+                        help='Base channel count (default: 32)')
+    parser.add_argument('--channel_multipliers', type=int, nargs='+', default=[1, 2, 3, 3],
+                        help='Per-level channel multipliers (default: 1 2 3 3)')
+    parser.add_argument('--layers_per_block', type=int, default=1,
+                        help='ResNet blocks per resolution level (default: 1)')
+    parser.add_argument('--attention_levels', type=int, nargs='+', default=[0, 0, 0, 1],
+                        help='Attention flags per level, 0 or 1 (default: 0 0 0 1)')
     return parser.parse_args()
 
 
@@ -201,6 +207,10 @@ def main():
     exp_dir = setup_experiment_folder(f'./experiments/{timestamp}-ddpm')
     print(f"Experiment directory: {exp_dir}")
 
+    # Parse architecture arguments into tuples
+    channel_multipliers = tuple(args.channel_multipliers)
+    attention_levels = tuple(bool(flag) for flag in args.attention_levels)
+
     # Log configuration
     config = {
         'epochs': args.epochs,
@@ -209,15 +219,21 @@ def main():
         'beta_schedule': 'cosine',
         'sample_every': args.sample_every,
         'base_channels': args.base_channels,
+        'channel_multipliers': list(channel_multipliers),
+        'layers_per_block': args.layers_per_block,
+        'attention_levels': list(attention_levels),
         'device': str(device),
         'batch_size': train_loader.batch_size,
     }
     log_config(exp_dir, config)
 
-    # Initialize model (new simplified UNet based on reference implementation)
+    # Initialize model
     model = UNet(
         image_channels=1,
         base_channels=args.base_channels,
+        channel_multipliers=channel_multipliers,
+        layers_per_block=args.layers_per_block,
+        attention_levels=attention_levels,
     ).to(device)
 
     num_params = sum(p.numel() for p in model.parameters())
@@ -237,6 +253,9 @@ def main():
     model_config = {
         'image_channels': 1,
         'base_channels': args.base_channels,
+        'channel_multipliers': list(channel_multipliers),
+        'layers_per_block': args.layers_per_block,
+        'attention_levels': list(attention_levels),
         'timesteps': args.timesteps,
     }
 

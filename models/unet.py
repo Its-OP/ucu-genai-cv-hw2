@@ -15,59 +15,67 @@ class UNet(nn.Module):
     Wrapper around diffusers.UNet2DModel for DDPM noise prediction.
 
     Pads 28×28 MNIST images to 32×32 internally (following the DDPM paper),
-    runs through a 4-level UNet, then crops back to 28×28. This makes the
+    runs through a multi-level UNet, then crops back to 28×28. This makes the
     padding/cropping transparent to the DDPM training and sampling loops.
 
-    Architecture (Ho et al. 2020):
-        - 4 resolution levels with channel multipliers (1×, 2×, 4×, 4×)
-        - 2 ResNet blocks per level
-        - Self-attention at 8×8 and 4×4 resolutions
+    Architecture (based on Ho et al. 2020):
+        - Configurable resolution levels with channel multipliers
+        - Configurable ResNet blocks per level
+        - Self-attention at selected resolution levels
         - Sinusoidal timestep embeddings
 
     Args:
         image_channels (int): Number of input/output image channels. Default: 1 (grayscale).
-        base_channels (int): Base channel count. Multiplied by (1, 2, 4, 4) for each level.
-                             Default: 32 → channels (32, 64, 128, 128) → ~3M params.
-                             Use 64 for higher capacity: (64, 128, 256, 256) → ~26M params.
+        base_channels (int): Base channel count, multiplied by each entry in channel_multipliers.
+                             Default: 32.
+        channel_multipliers (tuple[int]): Per-level channel multipliers applied to base_channels.
+                             Default: (1, 2, 3, 3) → channels (32, 64, 96, 96) → ~2.7M params.
+        layers_per_block (int): Number of ResNet blocks at each resolution level.
+                             Default: 1.
+        attention_levels (tuple[bool]): Whether to use self-attention at each resolution level.
+                             Default: (False, False, False, True) → attention only at 4×4 bottleneck.
+        norm_num_groups (int): Number of groups for GroupNorm. Must divide all channel counts.
+                             Default: 32.
     """
 
-    def __init__(self, image_channels=1, base_channels=32):
+    def __init__(
+        self,
+        image_channels=1,
+        base_channels=32,
+        channel_multipliers=(1, 2, 3, 3),
+        layers_per_block=1,
+        attention_levels=(False, False, False, True),
+        norm_num_groups=32,
+    ):
         super().__init__()
         self.image_channels = image_channels
 
-        # Channel multipliers (1×, 2×, 4×, 4×) following Ho et al. 2020
-        channel_level_0 = base_channels          # 32 (default)
-        channel_level_1 = base_channels * 2      # 64
-        channel_level_2 = base_channels * 4      # 128
-        channel_level_3 = base_channels * 4      # 128
+        # Compute per-level channel counts: base_channels × multiplier for each level
+        block_output_channels = tuple(
+            base_channels * multiplier for multiplier in channel_multipliers
+        )
+
+        # Build block type tuples from attention_levels flags
+        # True → attention block (AttnDownBlock2D / AttnUpBlock2D)
+        # False → plain convolution block (DownBlock2D / UpBlock2D)
+        down_block_types = tuple(
+            "AttnDownBlock2D" if use_attention else "DownBlock2D"
+            for use_attention in attention_levels
+        )
+        up_block_types = tuple(
+            "AttnUpBlock2D" if use_attention else "UpBlock2D"
+            for use_attention in reversed(attention_levels)
+        )
 
         self.model = UNet2DModel(
             sample_size=32,
             in_channels=image_channels,
             out_channels=image_channels,
-            # 4 levels: 32×32 → 16×16 → 8×8 → 4×4
-            block_out_channels=(
-                channel_level_0,
-                channel_level_1,
-                channel_level_2,
-                channel_level_3,
-            ),
-            # Encoder: plain convolutions at high res, attention at low res (8×8, 4×4)
-            down_block_types=(
-                "DownBlock2D",
-                "DownBlock2D",
-                "AttnDownBlock2D",
-                "AttnDownBlock2D",
-            ),
-            # Decoder: attention at low res (4×4, 8×8), plain convolutions at high res
-            up_block_types=(
-                "AttnUpBlock2D",
-                "AttnUpBlock2D",
-                "UpBlock2D",
-                "UpBlock2D",
-            ),
-            layers_per_block=2,
-            norm_num_groups=32,
+            block_out_channels=block_output_channels,
+            down_block_types=down_block_types,
+            up_block_types=up_block_types,
+            layers_per_block=layers_per_block,
+            norm_num_groups=norm_num_groups,
             norm_eps=1e-5,
         )
 

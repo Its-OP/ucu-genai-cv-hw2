@@ -74,10 +74,19 @@ def load_checkpoint(checkpoint_path, device):
     print(f"  Trained for {checkpoint['epoch'] + 1} epochs "
           f"(train_loss={checkpoint['train_loss']:.6f}, eval_loss={checkpoint['eval_loss']:.6f})")
 
+    # Backward compatibility: old checkpoints lack architecture fields,
+    # fall back to the original DDPM defaults (Ho et al. 2020)
+    channel_multipliers = tuple(config.get('channel_multipliers', (1, 2, 4, 4)))
+    layers_per_block = config.get('layers_per_block', 2)
+    attention_levels = tuple(config.get('attention_levels', (False, False, True, True)))
+
     # Reconstruct model architecture from saved config
     model = UNet(
         image_channels=config['image_channels'],
         base_channels=config['base_channels'],
+        channel_multipliers=channel_multipliers,
+        layers_per_block=layers_per_block,
+        attention_levels=attention_levels,
     ).to(device)
 
     # Load EMA weights

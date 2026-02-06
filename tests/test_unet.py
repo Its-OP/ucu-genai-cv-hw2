@@ -174,8 +174,8 @@ class TestUNetConfigurations:
         assert output.shape == x.shape
 
     def test_default_base_channels_parameter_count(self, device, seed):
-        """Default base_channels=32 should give ~3M parameters."""
-        # Arrange — use default base_channels (32)
+        """Default config should give <3M parameters (lightweight for MNIST)."""
+        # Arrange — use all defaults: base_channels=32, multipliers=(1,2,3,3), layers=1
         model = UNet(
             image_channels=1,
         ).to(device)
@@ -183,8 +183,8 @@ class TestUNetConfigurations:
         # Act
         number_of_parameters = sum(p.numel() for p in model.parameters())
 
-        # Assert — ~3M params with (32, 64, 128, 128) channels
-        assert 1_000_000 < number_of_parameters < 10_000_000
+        # Assert — ~2.7M params with (32, 64, 96, 96) channels, 1 layer/block
+        assert 1_000_000 < number_of_parameters < 3_000_000
 
     def test_large_base_channels(self, device, seed):
         """Should work with base_channels=64 for higher capacity."""
@@ -229,6 +229,49 @@ class TestUNetConfigurations:
         ).to(device)
         model.eval()
         x = torch.randn(2, 3, 28, 28, device=device)
+        timestep = torch.randint(0, 1000, (2,), device=device)
+
+        # Act
+        output = model(x, timestep)
+
+        # Assert
+        assert output.shape == x.shape
+
+    def test_custom_architecture_parameters(self, device, seed):
+        """Should work with custom channel multipliers, layers, and attention levels."""
+        # Arrange — use the original DDPM (Ho et al. 2020) config for comparison
+        model = UNet(
+            image_channels=1,
+            base_channels=32,
+            channel_multipliers=(1, 2, 4, 4),
+            layers_per_block=2,
+            attention_levels=(False, False, True, True),
+        ).to(device)
+        model.eval()
+        x = torch.randn(2, 1, 28, 28, device=device)
+        timestep = torch.randint(0, 1000, (2,), device=device)
+
+        # Act
+        output = model(x, timestep)
+
+        # Assert
+        assert output.shape == x.shape
+        number_of_parameters = sum(p.numel() for p in model.parameters())
+        # Original DDPM config with base_channels=32 should give ~6.7M params
+        assert 5_000_000 < number_of_parameters < 8_000_000
+
+    def test_three_level_architecture(self, device, seed):
+        """Should work with 3 resolution levels instead of 4."""
+        # Arrange
+        model = UNet(
+            image_channels=1,
+            base_channels=32,
+            channel_multipliers=(1, 2, 4),
+            layers_per_block=1,
+            attention_levels=(False, False, True),
+        ).to(device)
+        model.eval()
+        x = torch.randn(2, 1, 28, 28, device=device)
         timestep = torch.randint(0, 1000, (2,), device=device)
 
         # Act
