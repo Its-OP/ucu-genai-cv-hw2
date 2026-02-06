@@ -158,7 +158,36 @@ class TestUNetConfigurations:
     """Tests for different UNet configurations."""
 
     def test_default_base_channels(self, device, seed):
-        """Should work with default base channel count (64)."""
+        """Should work with default base channel count (32)."""
+        # Arrange — use default base_channels (32)
+        model = UNet(
+            image_channels=1,
+        ).to(device)
+        model.eval()
+        x = torch.randn(2, 1, 28, 28, device=device)
+        timestep = torch.randint(0, 1000, (2,), device=device)
+
+        # Act
+        output = model(x, timestep)
+
+        # Assert
+        assert output.shape == x.shape
+
+    def test_default_base_channels_parameter_count(self, device, seed):
+        """Default base_channels=32 should give ~3M parameters."""
+        # Arrange — use default base_channels (32)
+        model = UNet(
+            image_channels=1,
+        ).to(device)
+
+        # Act
+        number_of_parameters = sum(p.numel() for p in model.parameters())
+
+        # Assert — ~3M params with (32, 64, 128, 128) channels
+        assert 1_000_000 < number_of_parameters < 10_000_000
+
+    def test_large_base_channels(self, device, seed):
+        """Should work with base_channels=64 for higher capacity."""
         # Arrange
         model = UNet(
             image_channels=1,

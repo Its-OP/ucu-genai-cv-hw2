@@ -8,58 +8,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from models.ddpm import DDPM, linear_beta_schedule, cosine_beta_schedule
-
-
-class TestLinearBetaSchedule:
-    """Tests for linear_beta_schedule function."""
-
-    def test_length(self):
-        """Output should have exactly `timesteps` elements."""
-        # Arrange
-        timesteps = 1000
-
-        # Act
-        betas = linear_beta_schedule(timesteps)
-
-        # Assert
-        assert len(betas) == timesteps
-
-    def test_bounds(self):
-        """All values should be in [1e-4, 0.02]."""
-        # Arrange
-        timesteps = 1000
-
-        # Act
-        betas = linear_beta_schedule(timesteps)
-
-        # Assert
-        assert betas.min() >= 1e-4
-        assert betas.max() <= 0.02
-
-    def test_monotonic_increasing(self):
-        """Values should be strictly increasing."""
-        # Arrange
-        timesteps = 1000
-
-        # Act
-        betas = linear_beta_schedule(timesteps)
-
-        # Assert
-        differences = betas[1:] - betas[:-1]
-        assert (differences > 0).all()
-
-    def test_different_timesteps(self):
-        """Should work with different timestep counts."""
-        # Arrange
-        timestep_counts = [10, 100, 1000, 2000]
-
-        for count in timestep_counts:
-            # Act
-            betas = linear_beta_schedule(count)
-
-            # Assert
-            assert len(betas) == count
+from models.ddpm import DDPM, cosine_beta_schedule
 
 
 class TestCosineBetaSchedule:
@@ -160,14 +109,17 @@ class TestDDPMInitialization:
         # Assert
         assert abs(first_element - 1.0) < 1e-6
 
-    def test_linear_vs_cosine_schedule(self, device):
-        """Different schedules should produce different betas."""
-        # Arrange & Act
-        ddpm_linear = DDPM(timesteps=1000, beta_schedule='linear').to(device)
-        ddpm_cosine = DDPM(timesteps=1000, beta_schedule='cosine').to(device)
+    def test_uses_cosine_schedule(self, device):
+        """DDPM should use cosine beta schedule (hardcoded)."""
+        # Arrange
+        timesteps = 1000
+        expected_betas = cosine_beta_schedule(timesteps).to(device)
+
+        # Act
+        ddpm = DDPM(timesteps=timesteps).to(device)
 
         # Assert
-        assert not torch.allclose(ddpm_linear.betas, ddpm_cosine.betas)
+        torch.testing.assert_close(ddpm.betas, expected_betas)
 
 
 class TestDDPMQSample:

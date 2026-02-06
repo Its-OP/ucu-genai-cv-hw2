@@ -22,19 +22,6 @@ def cosine_beta_schedule(timesteps: int, s: float = 0.008) -> torch.Tensor:
     return torch.clamp(betas, 0.0001, 0.9999)
 
 
-def linear_beta_schedule(timesteps: int) -> torch.Tensor:
-    """
-    Linear schedule from Ho et al. 2020.
-
-    Formula:
-        β_t = β_1 + (t-1)/(T-1) · (β_T - β_1)
-        where β_1 = 0.0001, β_T = 0.02
-    """
-    beta_start = 1e-4
-    beta_end = 0.02
-    return torch.linspace(beta_start, beta_end, timesteps)
-
-
 def extract(values: torch.Tensor, t: torch.Tensor, shape: tuple) -> torch.Tensor:
     """Extract values at timestep t and reshape for broadcasting."""
     batch_size = t.shape[0]
@@ -48,14 +35,11 @@ class DDPM(nn.Module):
 
     Implements the forward (noising) and reverse (denoising) diffusion processes.
     """
-    def __init__(self, timesteps: int = 1000, beta_schedule: str = 'cosine'):
+    def __init__(self, timesteps: int = 1000):
         super().__init__()
         self.timesteps = timesteps
 
-        if beta_schedule == 'linear':
-            betas = linear_beta_schedule(timesteps)
-        else:
-            betas = cosine_beta_schedule(timesteps)
+        betas = cosine_beta_schedule(timesteps)
 
         # α_t = 1 - β_t
         alphas = 1.0 - betas

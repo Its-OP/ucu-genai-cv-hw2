@@ -27,18 +27,19 @@ class UNet(nn.Module):
     Args:
         image_channels (int): Number of input/output image channels. Default: 1 (grayscale).
         base_channels (int): Base channel count. Multiplied by (1, 2, 4, 4) for each level.
-                             Default: 64 → channels (64, 128, 256, 256).
+                             Default: 32 → channels (32, 64, 128, 128) → ~3M params.
+                             Use 64 for higher capacity: (64, 128, 256, 256) → ~26M params.
     """
 
-    def __init__(self, image_channels=1, base_channels=64):
+    def __init__(self, image_channels=1, base_channels=32):
         super().__init__()
         self.image_channels = image_channels
 
         # Channel multipliers (1×, 2×, 4×, 4×) following Ho et al. 2020
-        channel_level_0 = base_channels          # 64
-        channel_level_1 = base_channels * 2      # 128
-        channel_level_2 = base_channels * 4      # 256
-        channel_level_3 = base_channels * 4      # 256
+        channel_level_0 = base_channels          # 32 (default)
+        channel_level_1 = base_channels * 2      # 64
+        channel_level_2 = base_channels * 4      # 128
+        channel_level_3 = base_channels * 4      # 128
 
         self.model = UNet2DModel(
             sample_size=32,

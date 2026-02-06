@@ -2,9 +2,10 @@
 DDPM Training Script for MNIST.
 
 Usage:
-    python -m models.train --epochs 100 --lr 2e-4 --beta_schedule cosine
+    python -m models.train --epochs 100 --lr 1e-3
 """
 import argparse
+import copy
 import time
 from datetime import datetime
 
@@ -28,17 +29,59 @@ from models.utils import (
 )
 
 
+class ExponentialMovingAverage:
+    """
+    Exponential Moving Average (EMA) of model parameters.
+
+    Maintains shadow copies of model parameters that are updated as:
+        shadow_param = decay * shadow_param + (1 - decay) * param
+
+    Used in the original DDPM paper (Ho et al. 2020) to produce smoother,
+    higher-quality samples during inference.
+
+    Args:
+        model: The model whose parameters will be tracked.
+        decay (float): EMA decay rate. Higher values give smoother averaging.
+                       Default: 0.995 (standard for small DDPM models).
+    """
+
+    def __init__(self, model, decay=0.995):
+        self.decay = decay
+        # Deep copy all parameters as shadow weights
+        self.shadow_parameters = [parameter.clone().detach() for parameter in model.parameters()]
+
+    def update(self, model):
+        """Update shadow parameters with current model parameters.
+
+        Formula: shadow = decay · shadow + (1 - decay) · param
+        """
+        for shadow_parameter, model_parameter in zip(self.shadow_parameters, model.parameters()):
+            shadow_parameter.data.mul_(self.decay).add_(
+                model_parameter.data, alpha=1.0 - self.decay
+            )
+
+    def apply_shadow(self, model):
+        """Replace model parameters with shadow (EMA) parameters for inference."""
+        self.backup_parameters = [parameter.clone() for parameter in model.parameters()]
+        for model_parameter, shadow_parameter in zip(model.parameters(), self.shadow_parameters):
+            model_parameter.data.copy_(shadow_parameter.data)
+
+    def restore(self, model):
+        """Restore original model parameters after inference."""
+        for model_parameter, backup_parameter in zip(model.parameters(), self.backup_parameters):
+            model_parameter.data.copy_(backup_parameter.data)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Train DDPM on MNIST')
     parser.add_argument('--epochs', type=int, default=100)
-    parser.add_argument('--lr', type=float, default=2e-4)
+    parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--batch_size', type=int, default=None,
                         help='Batch size (overrides data module default)')
     parser.add_argument('--timesteps', type=int, default=1000)
-    parser.add_argument('--beta_schedule', type=str, default='cosine', choices=['linear', 'cosine'])
     parser.add_argument('--sample_every', type=int, default=10)
-    parser.add_argument('--base_channels', type=int, default=64,
-                        help='Base channel count (use 64-128 for powerful GPUs)')
+    parser.add_argument('--base_channels', type=int, default=32,
+                        help='Base channel count (32 → ~3M params, 64 → ~26M params)')
     return parser.parse_args()
 
 
@@ -53,8 +96,8 @@ def get_device():
     return torch.device('cpu')
 
 
-def train_epoch(model, ddpm, optimizer, loader, device, scaler=None):
-    """Train for one epoch."""
+def train_epoch(model, ddpm, optimizer, loader, device, scaler=None, ema=None):
+    """Train for one epoch, updating EMA after each optimizer step."""
     model.train()
     total_loss = 0
     use_amp = scaler is not None
@@ -79,6 +122,10 @@ def train_epoch(model, ddpm, optimizer, loader, device, scaler=None):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+
+        # Update EMA shadow parameters after each optimizer step
+        if ema is not None:
+            ema.update(model)
 
         total_loss += loss.item()
 
@@ -126,7 +173,7 @@ def main():
         'epochs': args.epochs,
         'learning_rate': args.lr,
         'timesteps': args.timesteps,
-        'beta_schedule': args.beta_schedule,
+        'beta_schedule': 'cosine',
         'sample_every': args.sample_every,
         'base_channels': args.base_channels,
         'device': str(device),
@@ -151,7 +198,11 @@ def main():
         print("CUDA optimizations enabled: torch.compile() + mixed precision (float16)")
 
     # Initialize DDPM
-    ddpm = DDPM(timesteps=args.timesteps, beta_schedule=args.beta_schedule).to(device)
+    ddpm = DDPM(timesteps=args.timesteps).to(device)
+
+    # Initialize EMA for smoother sample quality (DDPM paper, Ho et al. 2020)
+    ema = ExponentialMovingAverage(model, decay=0.995)
+    print("EMA enabled (decay=0.995)")
 
     # Optimizer and scheduler
     # AdamW with weight decay for better generalization
@@ -167,8 +218,12 @@ def main():
     for epoch in range(args.epochs):
         epoch_start = time.time()
 
-        train_loss = train_epoch(model, ddpm, optimizer, train_loader, device, scaler)
+        train_loss = train_epoch(model, ddpm, optimizer, train_loader, device, scaler, ema)
+
+        # Use EMA weights for evaluation (better sample quality)
+        ema.apply_shadow(model)
         eval_loss = evaluate(model, ddpm, test_loader, device, use_amp)
+        ema.restore(model)
 
         train_losses.append(train_loss)
         eval_losses.append(eval_loss)
@@ -179,18 +234,21 @@ def main():
 
         print(f"Epoch {epoch+1}/{args.epochs} | Train: {train_loss:.6f} | Eval: {eval_loss:.6f} | Time: {epoch_time:.1f}s")
 
-        # Generate samples periodically
+        # Generate samples periodically using EMA weights
         if (epoch + 1) % args.sample_every == 0:
+            ema.apply_shadow(model)
             model.eval()
             samples = ddpm.p_sample_loop(model, (10, 1, 28, 28))
             save_images(samples, f'{exp_dir}/epoch_samples/epoch_{epoch+1:03d}.png')
             model.train()
+            ema.restore(model)
 
     total_time = time.time() - start_time
     print(f"\nTraining completed in {total_time/60:.2f} minutes")
 
-    # Generate final outputs
+    # Generate final outputs using EMA weights
     print("Generating final samples...")
+    ema.apply_shadow(model)
     model.eval()
 
     # 10 final samples
