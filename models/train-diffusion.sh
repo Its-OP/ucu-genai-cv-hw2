@@ -1,13 +1,7 @@
 #!/bin/bash
-# DDPM Training Script for MNIST
-# Creates experiment folder with all outputs in ./experiments/
-
 set -e
 
-# Default configuration
-# base_channels=32 → ~3M params (channel multipliers: 1, 2, 4, 4)
-# Use BASE_CHANNELS=64 for higher capacity (~26M params)
-EPOCHS=${EPOCHS:-100}
+EPOCHS=${EPOCHS:-50}
 LEARNING_RATE=${LEARNING_RATE:-1e-3}
 TIMESTEPS=${TIMESTEPS:-1000}
 SAMPLE_EVERY=${SAMPLE_EVERY:-10}

@@ -10,6 +10,7 @@ def setup_experiment_folder(exp_dir: str) -> str:
     os.makedirs(f'{exp_dir}/epoch_samples', exist_ok=True)
     os.makedirs(f'{exp_dir}/final_samples', exist_ok=True)
     os.makedirs(f'{exp_dir}/denoising_steps', exist_ok=True)
+    os.makedirs(f'{exp_dir}/checkpoints', exist_ok=True)
     return exp_dir
 
 

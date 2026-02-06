@@ -153,6 +153,39 @@ def evaluate(model, ddpm, loader, device, use_amp=False):
     return total_loss / len(loader)
 
 
+def save_checkpoint(model, checkpoint_path, config, epoch, train_loss, eval_loss):
+    """Save model checkpoint with EMA weights and configuration.
+
+    The checkpoint contains everything needed to reconstruct the model
+    and generate samples: architecture config + EMA-smoothed weights.
+
+    Note: Call this while EMA weights are applied to the model
+    (after ema.apply_shadow()) so model.state_dict() returns EMA weights.
+
+    Args:
+        model: The model with EMA weights currently applied.
+        checkpoint_path: Path to save the .pt file.
+        config: Dict with model architecture config (image_channels, base_channels, timesteps).
+        epoch: Current epoch number (0-indexed).
+        train_loss: Training loss at this epoch.
+        eval_loss: Evaluation loss at this epoch.
+    """
+    # Handle torch.compile wrapper: extract original module's state_dict
+    if hasattr(model, '_orig_mod'):
+        model_state_dict = model._orig_mod.state_dict()
+    else:
+        model_state_dict = model.state_dict()
+
+    checkpoint = {
+        'model_state_dict': model_state_dict,
+        'config': config,
+        'epoch': epoch,
+        'train_loss': train_loss,
+        'eval_loss': eval_loss,
+    }
+    torch.save(checkpoint, checkpoint_path)
+
+
 def main():
     args = parse_args()
     device = get_device()
@@ -200,6 +233,13 @@ def main():
     # Initialize DDPM
     ddpm = DDPM(timesteps=args.timesteps).to(device)
 
+    # Model config dict — saved inside checkpoints for reconstruction at generation time
+    model_config = {
+        'image_channels': 1,
+        'base_channels': args.base_channels,
+        'timesteps': args.timesteps,
+    }
+
     # Initialize EMA for smoother sample quality (DDPM paper, Ho et al. 2020)
     ema = ExponentialMovingAverage(model, decay=0.995)
     print("EMA enabled (decay=0.995)")
@@ -234,22 +274,38 @@ def main():
 
         print(f"Epoch {epoch+1}/{args.epochs} | Train: {train_loss:.6f} | Eval: {eval_loss:.6f} | Time: {epoch_time:.1f}s")
 
-        # Generate samples periodically using EMA weights
+        # Generate samples and save checkpoint periodically using EMA weights
         if (epoch + 1) % args.sample_every == 0:
             ema.apply_shadow(model)
             model.eval()
             samples = ddpm.p_sample_loop(model, (10, 1, 28, 28))
             save_images(samples, f'{exp_dir}/epoch_samples/epoch_{epoch+1:03d}.png')
+
+            # Save checkpoint with EMA weights (model currently has EMA applied)
+            checkpoint_path = f'{exp_dir}/checkpoints/checkpoint_epoch_{epoch+1:03d}.pt'
+            save_checkpoint(model, checkpoint_path, model_config, epoch, train_loss, eval_loss)
+            print(f"  Checkpoint saved: {checkpoint_path}")
+
             model.train()
             ema.restore(model)
 
     total_time = time.time() - start_time
     print(f"\nTraining completed in {total_time/60:.2f} minutes")
 
-    # Generate final outputs using EMA weights
+    # Generate final outputs and save final checkpoint using EMA weights
     print("Generating final samples...")
     ema.apply_shadow(model)
     model.eval()
+
+    # Save final checkpoint with EMA weights
+    final_checkpoint_path = f'{exp_dir}/checkpoints/checkpoint_final.pt'
+    save_checkpoint(
+        model, final_checkpoint_path, model_config,
+        epoch=args.epochs - 1,
+        train_loss=train_losses[-1],
+        eval_loss=eval_losses[-1],
+    )
+    print(f"Final checkpoint saved: {final_checkpoint_path}")
 
     # 10 final samples
     final_samples = ddpm.p_sample_loop(model, (10, 1, 28, 28))
