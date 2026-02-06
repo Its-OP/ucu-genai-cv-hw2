@@ -74,12 +74,25 @@ class DDPM(nn.Module):
         self.register_buffer('sqrt_alphas_cumprod', torch.sqrt(alphas_cumprod))
         self.register_buffer('sqrt_one_minus_alphas_cumprod', torch.sqrt(1.0 - alphas_cumprod))
 
-        # Precomputed values for p(x_{t-1} | x_t)
-        self.register_buffer('sqrt_recip_alphas', torch.sqrt(1.0 / alphas))
+        # Precomputed values for reconstructing x₀ from noise prediction ε_θ:
+        #   x₀ = √(1/ᾱ_t) · x_t  -  √(1/ᾱ_t - 1) · ε_θ
+        self.register_buffer('sqrt_recip_alphas_cumprod', torch.sqrt(1.0 / alphas_cumprod))
+        self.register_buffer('sqrt_recipm1_alphas_cumprod', torch.sqrt(1.0 / alphas_cumprod - 1.0))
 
         # Posterior variance: β̃_t = β_t · (1 - ᾱ_{t-1}) / (1 - ᾱ_t)
         posterior_variance = betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
         self.register_buffer('posterior_variance', posterior_variance)
+
+        # Posterior mean coefficients (DDPM paper Eq. 7):
+        #   μ̃_t(x_t, x₀) = (√ᾱ_{t-1} · β_t)/(1 - ᾱ_t) · x₀  +  (√α_t · (1 - ᾱ_{t-1}))/(1 - ᾱ_t) · x_t
+        self.register_buffer(
+            'posterior_mean_coeff_x0',
+            torch.sqrt(alphas_cumprod_prev) * betas / (1.0 - alphas_cumprod)
+        )
+        self.register_buffer(
+            'posterior_mean_coeff_xt',
+            torch.sqrt(alphas) * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
+        )
 
     def q_sample(self, x_0: torch.Tensor, t: torch.Tensor, noise: torch.Tensor = None) -> torch.Tensor:
         """
@@ -114,20 +127,34 @@ class DDPM(nn.Module):
         """
         Reverse diffusion step: sample x_{t-1} from p_θ(x_{t-1} | x_t).
 
-        Formula:
-            μ_θ(x_t, t) = (1/√α_t) · (x_t - (β_t/√(1-ᾱ_t)) · ε_θ(x_t, t))
-            x_{t-1} = μ_θ + √β̃_t · z,  where z ~ N(0, I) for t > 0
+        Following the diffusers DDPMScheduler approach:
+            1. Predict noise: ε_θ(x_t, t)
+            2. Reconstruct x₀: x̂₀ = √(1/ᾱ_t) · x_t  -  √(1/ᾱ_t - 1) · ε_θ
+            3. Clip x̂₀ to [-1, 1] for numerical stability
+            4. Compute posterior mean (DDPM paper Eq. 7):
+               μ̃_t = (√ᾱ_{t-1} · β_t)/(1 - ᾱ_t) · x̂₀  +  (√α_t · (1 - ᾱ_{t-1}))/(1 - ᾱ_t) · x_t
+            5. Sample: x_{t-1} = μ̃_t + √β̃_t · z,  where z ~ N(0, I) for t > 0
         """
-        betas_t = extract(self.betas, t, x_t.shape)
-        sqrt_one_minus_alphas_cumprod_t = extract(self.sqrt_one_minus_alphas_cumprod, t, x_t.shape)
-        sqrt_recip_alphas_t = extract(self.sqrt_recip_alphas, t, x_t.shape)
-
-        # Predict noise
+        # Predict noise ε_θ(x_t, t)
         predicted_noise = model(x_t, t)
 
-        # Compute mean: μ_θ = (1/√α_t) · (x_t - (β_t/√(1-ᾱ_t)) · ε_θ)
-        model_mean = sqrt_recip_alphas_t * (
-            x_t - betas_t * predicted_noise / sqrt_one_minus_alphas_cumprod_t
+        # Reconstruct x₀ from noise prediction:
+        #   x̂₀ = (x_t - √(1 - ᾱ_t) · ε_θ) / √ᾱ_t
+        #       = √(1/ᾱ_t) · x_t  -  √(1/ᾱ_t - 1) · ε_θ
+        predicted_original_sample = (
+            extract(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t
+            - extract(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape) * predicted_noise
+        )
+
+        # Clip predicted x₀ to [-1, 1] for numerical stability
+        # (matching diffusers DDPMScheduler clip_sample=True, clip_sample_range=1.0)
+        predicted_original_sample = predicted_original_sample.clamp(-1.0, 1.0)
+
+        # Compute posterior mean using clipped x₀ (DDPM paper Eq. 7):
+        #   μ̃_t = coeff_x0 · x̂₀ + coeff_xt · x_t
+        model_mean = (
+            extract(self.posterior_mean_coeff_x0, t, x_t.shape) * predicted_original_sample
+            + extract(self.posterior_mean_coeff_xt, t, x_t.shape) * x_t
         )
 
         if t_index == 0:

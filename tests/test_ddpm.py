@@ -132,8 +132,11 @@ class TestDDPMInitialization:
         assert ddpm.alphas_cumprod_prev.shape == (timesteps,)
         assert ddpm.sqrt_alphas_cumprod.shape == (timesteps,)
         assert ddpm.sqrt_one_minus_alphas_cumprod.shape == (timesteps,)
-        assert ddpm.sqrt_recip_alphas.shape == (timesteps,)
+        assert ddpm.sqrt_recip_alphas_cumprod.shape == (timesteps,)
+        assert ddpm.sqrt_recipm1_alphas_cumprod.shape == (timesteps,)
         assert ddpm.posterior_variance.shape == (timesteps,)
+        assert ddpm.posterior_mean_coeff_x0.shape == (timesteps,)
+        assert ddpm.posterior_mean_coeff_xt.shape == (timesteps,)
 
     def test_alphas_cumprod_decreasing(self, device):
         """alphas_cumprod should be monotonically decreasing."""
@@ -393,6 +396,57 @@ class TestDDPMPSample:
 
         # Assert
         assert not torch.allclose(x_prev_1, x_prev_2)
+
+    def test_x0_clipping_bounds_output(self, device, seed):
+        """p_sample should produce bounded output via x₀ clipping, even with extreme noise predictions."""
+        # Arrange
+        class ExtremeNoiseModel(nn.Module):
+            """Model that outputs extreme noise predictions to test clipping."""
+            def forward(self, x, t):
+                return torch.ones_like(x) * 100.0  # Extreme noise prediction
+
+        ddpm = DDPM(timesteps=1000).to(device)
+        model = ExtremeNoiseModel().to(device)
+        model.eval()
+        x_t = torch.randn(4, 1, 28, 28, device=device)
+        t = torch.full((4,), 500, dtype=torch.long, device=device)
+
+        # Act
+        x_prev = ddpm.p_sample(model, x_t, t, t_index=500)
+
+        # Assert
+        # Without x₀ clipping, extreme predictions would cause the output to explode.
+        # With clipping, the output should remain bounded.
+        assert not torch.isnan(x_prev).any()
+        assert not torch.isinf(x_prev).any()
+        assert x_prev.abs().max() < 100
+
+    def test_new_buffer_shapes(self, device):
+        """New precomputed buffers should have correct shapes."""
+        # Arrange
+        timesteps = 1000
+        ddpm = DDPM(timesteps=timesteps).to(device)
+
+        # Assert
+        assert ddpm.sqrt_recip_alphas_cumprod.shape == (timesteps,)
+        assert ddpm.sqrt_recipm1_alphas_cumprod.shape == (timesteps,)
+        assert ddpm.posterior_mean_coeff_x0.shape == (timesteps,)
+        assert ddpm.posterior_mean_coeff_xt.shape == (timesteps,)
+
+    def test_posterior_mean_coefficients_non_negative(self, device):
+        """Posterior mean coefficients should be non-negative for valid timesteps.
+
+        Both coeff_x0 (weight on predicted x₀) and coeff_xt (weight on x_t)
+        should be non-negative, ensuring the posterior mean is a valid
+        interpolation between x₀ and x_t.
+        """
+        # Arrange
+        ddpm = DDPM(timesteps=1000).to(device)
+
+        # Assert
+        # Skip t=0 where coefficients may be 0/0 (NaN)
+        assert (ddpm.posterior_mean_coeff_x0[1:] >= 0).all()
+        assert (ddpm.posterior_mean_coeff_xt[1:] >= 0).all()
 
     def test_no_gradient_computation(self, device, seed):
         """p_sample should not compute gradients (uses @torch.no_grad())."""
