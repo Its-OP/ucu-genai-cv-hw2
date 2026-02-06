@@ -7,7 +7,7 @@ set -e
 # Default configuration
 # Note: base_channels must be 64 as the UNet architecture has hardcoded channel sizes
 EPOCHS=${EPOCHS:-100}
-LEARNING_RATE=${LEARNING_RATE:-2e-5}
+LEARNING_RATE=${LEARNING_RATE:-1e-4}
 TIMESTEPS=${TIMESTEPS:-1000}
 BETA_SCHEDULE=${BETA_SCHEDULE:-cosine}
 SAMPLE_EVERY=${SAMPLE_EVERY:-10}
