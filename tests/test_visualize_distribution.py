@@ -1,132 +1,108 @@
 """
 Unit tests for UMAP distribution visualization.
 
-Tests: bottleneck feature extraction (shape, determinism, no gradients,
-batch processing), batched sample generation (shape, various batch sizes).
+Tests: pixel-space feature flattening (shape, determinism, values),
+batched sample generation (shape, various batch sizes, timing).
 All tests follow the AAA pattern (Arrange, Act, Assert).
 """
+import numpy as np
 import pytest
 import torch
 import torch.nn as nn
 
-from models.unet import UNet
 from models.ddpm import DDPM
 from models.ddim import DDIMSampler
 from models.visualize_distribution import (
-    extract_bottleneck_features,
+    flatten_images_to_pixels,
     generate_samples_batched,
 )
 
 
-class TestExtractBottleneckFeatures:
-    """Tests for UNet bottleneck feature extraction via forward hooks."""
+class TestFlattenImagesToPixels:
+    """Tests for pixel-space feature flattening."""
 
-    def test_output_shape(self, device, seed):
-        """Extracted features should have shape (N, bottleneck_channels)."""
+    def test_output_shape_mnist(self, seed):
+        """Flattened MNIST images should have shape (N, 784) = (N, 1*28*28)."""
         # Arrange
-        model = UNet(image_channels=1, base_channels=32).to(device)
-        model.eval()
-        images = torch.randn(8, 1, 28, 28, device=device)
+        images = torch.randn(8, 1, 28, 28)
 
         # Act
-        features = extract_bottleneck_features(model, images, device, batch_size=4)
+        features = flatten_images_to_pixels(images)
 
-        # Assert — bottleneck channels = base_channels * last multiplier = 32 * 3 = 96
-        assert features.shape == (8, 96)
+        # Assert — 1 channel * 28 height * 28 width = 784
+        assert features.shape == (8, 784)
 
-    def test_no_gradient_computation(self, device, seed):
-        """Extracted features should not have gradient tracking."""
+    def test_output_is_numpy(self, seed):
+        """Returned features should be a numpy array (ready for UMAP)."""
         # Arrange
-        model = UNet(image_channels=1, base_channels=32).to(device)
-        model.eval()
-        images = torch.randn(4, 1, 28, 28, device=device)
+        images = torch.randn(4, 1, 28, 28)
 
         # Act
-        features = extract_bottleneck_features(model, images, device, batch_size=4)
+        features = flatten_images_to_pixels(images)
 
         # Assert
-        assert features.grad_fn is None
-        assert not features.requires_grad
+        assert isinstance(features, np.ndarray)
 
-    def test_deterministic(self, device):
+    def test_deterministic(self, seed):
         """Same input should produce identical features across calls."""
         # Arrange
-        torch.manual_seed(42)
-        model = UNet(image_channels=1, base_channels=32).to(device)
-        model.eval()
-        images = torch.randn(4, 1, 28, 28, device=device)
+        images = torch.randn(4, 1, 28, 28)
 
         # Act
-        features_first = extract_bottleneck_features(model, images, device, batch_size=4)
-        features_second = extract_bottleneck_features(model, images, device, batch_size=4)
+        features_first = flatten_images_to_pixels(images)
+        features_second = flatten_images_to_pixels(images)
 
         # Assert
-        torch.testing.assert_close(features_first, features_second)
+        np.testing.assert_array_equal(features_first, features_second)
 
-    def test_batch_processing_consistency(self, device):
-        """Features should be identical regardless of batch_size used for extraction."""
+    def test_values_preserved(self, seed):
+        """Flattening should preserve pixel values exactly."""
         # Arrange
-        torch.manual_seed(42)
-        model = UNet(image_channels=1, base_channels=32).to(device)
-        model.eval()
-        images = torch.randn(8, 1, 28, 28, device=device)
-
-        # Act — process all at once vs in batches of 2
-        features_single_batch = extract_bottleneck_features(
-            model, images, device, batch_size=8,
-        )
-        features_small_batches = extract_bottleneck_features(
-            model, images, device, batch_size=2,
-        )
-
-        # Assert
-        torch.testing.assert_close(features_single_batch, features_small_batches)
-
-    def test_features_vary_across_different_inputs(self, device, seed):
-        """Different input images should produce different feature vectors."""
-        # Arrange
-        model = UNet(image_channels=1, base_channels=32).to(device)
-        model.eval()
-        images_a = torch.randn(4, 1, 28, 28, device=device)
-        images_b = torch.randn(4, 1, 28, 28, device=device) * 2 + 1
+        images = torch.randn(2, 1, 28, 28)
 
         # Act
-        features_a = extract_bottleneck_features(model, images_a, device, batch_size=4)
-        features_b = extract_bottleneck_features(model, images_b, device, batch_size=4)
+        features = flatten_images_to_pixels(images)
 
-        # Assert
-        assert not torch.allclose(features_a, features_b)
+        # Assert — first pixel of first image should match
+        assert features[0, 0] == pytest.approx(images[0, 0, 0, 0].item())
+        # Last pixel of first image
+        assert features[0, -1] == pytest.approx(images[0, 0, -1, -1].item())
 
-    def test_features_are_finite(self, device, seed):
-        """Extracted features should contain no NaN or Inf values."""
+    def test_different_inputs_produce_different_features(self, seed):
+        """Different images should produce different feature vectors."""
         # Arrange
-        model = UNet(image_channels=1, base_channels=32).to(device)
-        model.eval()
-        images = torch.randn(4, 1, 28, 28, device=device)
+        images_a = torch.randn(4, 1, 28, 28)
+        images_b = torch.randn(4, 1, 28, 28) * 2 + 1
 
         # Act
-        features = extract_bottleneck_features(model, images, device, batch_size=4)
+        features_a = flatten_images_to_pixels(images_a)
+        features_b = flatten_images_to_pixels(images_b)
 
         # Assert
-        assert not torch.isnan(features).any()
-        assert not torch.isinf(features).any()
+        assert not np.allclose(features_a, features_b)
 
-    def test_hook_cleanup(self, device, seed):
-        """Forward hooks should be removed after feature extraction."""
+    def test_features_are_finite(self, seed):
+        """Flattened features should contain no NaN or Inf values."""
         # Arrange
-        model = UNet(image_channels=1, base_channels=32).to(device)
-        model.eval()
-        images = torch.randn(4, 1, 28, 28, device=device)
-
-        # Count hooks before
-        hooks_before = len(model.model.mid_block._forward_hooks)
+        images = torch.randn(4, 1, 28, 28)
 
         # Act
-        extract_bottleneck_features(model, images, device, batch_size=4)
+        features = flatten_images_to_pixels(images)
 
-        # Assert — hooks should be cleaned up
-        hooks_after = len(model.model.mid_block._forward_hooks)
-        assert hooks_after == hooks_before
+        # Assert
+        assert not np.isnan(features).any()
+        assert not np.isinf(features).any()
+
+    def test_single_image(self, seed):
+        """Should work with a single image."""
+        # Arrange
+        images = torch.randn(1, 1, 28, 28)
+
+        # Act
+        features = flatten_images_to_pixels(images)
+
+        # Assert
+        assert features.shape == (1, 784)
 
 
 class TestGenerateSamplesBatched:

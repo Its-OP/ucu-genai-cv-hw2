@@ -2,14 +2,11 @@
 UMAP Distribution Visualization for DDPM/DDIM Generated Samples.
 
 Compares the distribution of freshly generated MNIST samples against real MNIST
-digits in UNet encoder feature space using UMAP (McInnes et al. 2018).
+digits in raw pixel space using UMAP (McInnes et al. 2018).
 
-Features are extracted from the UNet bottleneck (mid_block output) via PyTorch
-forward hooks. The bottleneck captures the model's compressed representation
-after attention-equipped processing, giving the richest feature space.
-
-For feature extraction, timestep t=0 is used (clean image encoding), which
-gives the model's representation of the actual image content.
+Each 28x28 grayscale image is flattened to a 784-dimensional vector. UMAP then
+reduces these to 2D for visualization. This directly measures whether the
+generated digits occupy the same pixel-space manifold as real MNIST digits.
 
 Usage:
     python -m models.visualize_distribution --checkpoint path/to/checkpoint.pt
@@ -25,7 +22,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import umap
-from tqdm import tqdm
 
 from models.generate import get_device, load_checkpoint, write_profile
 from models.ddim import DDIMSampler
@@ -88,64 +84,22 @@ def parse_args():
     return parser.parse_args()
 
 
-@torch.no_grad()
-def extract_bottleneck_features(model, images, device, batch_size=64):
-    """Extract UNet bottleneck features from a batch of images using forward hooks.
+def flatten_images_to_pixels(images):
+    """Flatten image tensors to pixel-space feature vectors for UMAP.
 
-    Registers a forward hook on model.model.mid_block (the diffusers UNet2DModel
-    bottleneck) to capture the encoder representation. Uses timestep t=0 to encode
-    clean images without noise. The hook output is global-average-pooled over spatial
-    dimensions to produce a fixed-size feature vector per image.
-
-    Feature extraction point:
-        After mid_block (attention + ResNet at lowest resolution)
-        Shape before pooling: (batch, bottleneck_channels, H_low, W_low)
-        Shape after pooling:  (batch, bottleneck_channels)
+    Each image of shape (C, H, W) is flattened to a 1D vector of length C*H*W.
+    For MNIST: (1, 28, 28) → 784-dimensional vector.
 
     Args:
-        model: UNet model instance (wraps diffusers.UNet2DModel as model.model).
         images: Tensor of shape (N, C, H, W) with images in [-1, 1] range.
-        device: Torch device to use for computation.
-        batch_size: Number of images to process in each forward pass.
 
     Returns:
-        Feature tensor of shape (N, bottleneck_channels), where bottleneck_channels
-        is the last entry of block_out_channels (e.g. 96 for default config).
+        Numpy array of shape (N, C*H*W) with flattened pixel values.
     """
-    model.eval()
-
-    all_features = []
-
-    for batch_start in range(0, len(images), batch_size):
-        batch_images = images[batch_start:batch_start + batch_size].to(device)
-        batch_size_actual = batch_images.shape[0]
-
-        # Storage for hooked features
-        captured_features = {}
-
-        def hook_function(module, input_tensors, output_tensor):
-            """Capture mid_block output during forward pass."""
-            captured_features['bottleneck'] = output_tensor.detach()
-
-        # Register hook on the UNet2DModel mid_block (bottleneck)
-        hook_handle = model.model.mid_block.register_forward_hook(hook_function)
-
-        try:
-            # Run forward pass with timestep t=0 (clean image, no noise)
-            # This gives the model's learned representation of the image content
-            timestep_zero = torch.zeros(batch_size_actual, device=device, dtype=torch.long)
-            model(batch_images, timestep_zero)
-
-            # Extract bottleneck features and apply global average pooling
-            # bottleneck shape: (batch, channels, height, width) e.g. (B, 96, 4, 4)
-            # After pooling: (batch, channels) e.g. (B, 96)
-            bottleneck_output = captured_features['bottleneck']
-            pooled_features = bottleneck_output.mean(dim=[2, 3])  # Global average pool over spatial dims
-            all_features.append(pooled_features.cpu())
-        finally:
-            hook_handle.remove()
-
-    return torch.cat(all_features, dim=0)
+    # Flatten each image: (N, C, H, W) → (N, C*H*W)
+    # For MNIST (1, 28, 28): feature_dim = 784
+    num_images = images.shape[0]
+    return images.reshape(num_images, -1).numpy()
 
 
 @torch.no_grad()
@@ -232,16 +186,16 @@ def create_umap_plot(
 ):
     """Create a two-panel UMAP scatter plot comparing real vs generated distributions.
 
-    UMAP (McInnes et al. 2018) reduces high-dimensional UNet bottleneck features
-    to 2D for visualization. It preserves both local neighborhood structure and
-    global cluster relationships.
+    UMAP (McInnes et al. 2018) reduces high-dimensional pixel vectors (784-dim for
+    MNIST) to 2D for visualization. It preserves both local neighborhood structure
+    and global cluster relationships.
 
     Left panel:  All points colored by source (real=blue, generated=red)
     Right panel: Real points colored by digit class (0-9), generated in gray
 
     Args:
-        real_features: Numpy array of shape (N_real, feature_dim) with real sample features.
-        generated_features: Numpy array of shape (N_gen, feature_dim) with generated features.
+        real_features: Numpy array of shape (N_real, feature_dim) with flattened pixel vectors.
+        generated_features: Numpy array of shape (N_gen, feature_dim) with flattened pixel vectors.
         real_labels: Numpy array of shape (N_real,) with digit class labels (0-9).
         output_path: File path for saving the plot (PDF for Overleaf import).
         umap_neighbors: UMAP n_neighbors parameter (controls local vs global balance).
@@ -313,7 +267,7 @@ def create_umap_plot(
     axis_class.set_ylabel('UMAP Component 2')
     axis_class.legend(fontsize=9, markerscale=3, ncol=2, loc='best')
 
-    plt.suptitle('UMAP Projection of UNet Bottleneck Features', fontsize=16, y=1.02)
+    plt.suptitle('UMAP Projection of Pixel Space', fontsize=16, y=1.02)
     plt.tight_layout()
     plt.savefig(output_path, dpi=200, bbox_inches='tight')
     plt.close()
@@ -441,24 +395,18 @@ def main():
     real_images, real_labels = load_real_samples(args.num_real)
     print(f"Loaded {len(real_images)} real samples with labels")
 
-    # Step 4: Extract bottleneck features
-    print("\n--- Step 4: Extracting bottleneck features ---")
+    # Step 4: Flatten images to pixel-space feature vectors
+    print("\n--- Step 4: Flattening images to pixel vectors ---")
     feature_extraction_start_time = time.time()
 
-    print("  Extracting features from real images...")
-    real_features = extract_bottleneck_features(
-        model, real_images, device, batch_size=args.batch_size,
-    )
+    real_features = flatten_images_to_pixels(real_images)
     print(f"  Real features shape: {real_features.shape}")
 
-    print("  Extracting features from generated images...")
-    generated_features = extract_bottleneck_features(
-        model, generated_images, device, batch_size=args.batch_size,
-    )
+    generated_features = flatten_images_to_pixels(generated_images)
     print(f"  Generated features shape: {generated_features.shape}")
 
     feature_extraction_time = time.time() - feature_extraction_start_time
-    print(f"Feature extraction complete: {feature_extraction_time:.2f}s")
+    print(f"Pixel flattening complete: {feature_extraction_time:.2f}s")
 
     # Step 5: Run UMAP and create visualization
     print("\n--- Step 5: Running UMAP and creating plot ---")
@@ -466,8 +414,8 @@ def main():
 
     plot_path = os.path.join(run_directory, 'real_vs_generated.pdf')
     create_umap_plot(
-        real_features=real_features.numpy(),
-        generated_features=generated_features.numpy(),
+        real_features=real_features,
+        generated_features=generated_features,
         real_labels=real_labels.numpy(),
         output_path=plot_path,
         umap_neighbors=args.umap_neighbors,
