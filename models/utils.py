@@ -70,7 +70,7 @@ def save_individual_denoising_steps(intermediates: list, folder: str):
             plt.figure(figsize=(3, 3))
             plt.imshow(img, cmap='gray')
             plt.axis('off')
-            plt.savefig(f'{folder}/step_{t:04d}_sample_{i}.png', bbox_inches='tight', dpi=100)
+            plt.savefig(f'{folder}/step_{t:04d}_sample_{i}.pdf', bbox_inches='tight', dpi=100)
             plt.close()
 
 

@@ -13,7 +13,9 @@
 #
 # Output structure (timestamped to avoid overwriting):
 #   distribution_plots/20260207_143052/
-#     real_vs_generated.png     # Two-panel UMAP scatter plot
+#     real_vs_generated.pdf     # Two-panel UMAP scatter plot (PDF for Overleaf)
+#     grid.pdf                  # Grid of all generated samples
+#     profile.txt               # Per-sample generation timing + averages
 #     metadata.txt              # Config, timing, sample counts
 #
 # Options:

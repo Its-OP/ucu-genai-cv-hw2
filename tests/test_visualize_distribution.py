@@ -154,7 +154,7 @@ class TestGenerateSamplesBatched:
         num_samples = 6
 
         # Act
-        samples = generate_samples_batched(
+        samples, per_sample_times = generate_samples_batched(
             model, ddpm, sampler, num_samples, device, batch_size=4, mode='ddim',
         )
 
@@ -170,7 +170,7 @@ class TestGenerateSamplesBatched:
         num_samples = 4
 
         # Act
-        samples = generate_samples_batched(
+        samples, per_sample_times = generate_samples_batched(
             model, ddpm, None, num_samples, device, batch_size=4, mode='ddpm',
         )
 
@@ -186,7 +186,7 @@ class TestGenerateSamplesBatched:
         model.eval()
 
         # Act — batch_size=64 but only 3 samples requested
-        samples = generate_samples_batched(
+        samples, per_sample_times = generate_samples_batched(
             model, ddpm, sampler, 3, device, batch_size=64, mode='ddim',
         )
 
@@ -202,7 +202,7 @@ class TestGenerateSamplesBatched:
         model.eval()
 
         # Act — batch_size=2 but 7 samples requested → 4 batches (2+2+2+1)
-        samples = generate_samples_batched(
+        samples, per_sample_times = generate_samples_batched(
             model, ddpm, sampler, 7, device, batch_size=2, mode='ddim',
         )
 
@@ -218,7 +218,7 @@ class TestGenerateSamplesBatched:
         model.eval()
 
         # Act
-        samples = generate_samples_batched(
+        samples, per_sample_times = generate_samples_batched(
             model, ddpm, sampler, 4, device, batch_size=4, mode='ddim',
         )
 
@@ -235,9 +235,26 @@ class TestGenerateSamplesBatched:
         model.eval()
 
         # Act
-        samples = generate_samples_batched(
+        samples, per_sample_times = generate_samples_batched(
             model, ddpm, sampler, 4, device, batch_size=4, mode='ddim',
         )
 
         # Assert
         assert samples.device == torch.device('cpu')
+
+    def test_per_sample_times_length(self, device, seed):
+        """Per-sample times list should have exactly num_samples entries."""
+        # Arrange
+        ddpm = DDPM(timesteps=100).to(device)
+        sampler = DDIMSampler(ddpm, ddim_timesteps=5, eta=0.0).to(device)
+        model = self._create_simple_model(device)
+        model.eval()
+
+        # Act
+        samples, per_sample_times = generate_samples_batched(
+            model, ddpm, sampler, 7, device, batch_size=3, mode='ddim',
+        )
+
+        # Assert
+        assert len(per_sample_times) == 7
+        assert all(t > 0 for t in per_sample_times)

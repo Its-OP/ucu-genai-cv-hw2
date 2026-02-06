@@ -27,8 +27,9 @@ import torch
 import umap
 from tqdm import tqdm
 
-from models.generate import get_device, load_checkpoint
+from models.generate import get_device, load_checkpoint, write_profile
 from models.ddim import DDIMSampler
+from models.utils import save_images
 from data import test_dataset
 
 
@@ -151,6 +152,9 @@ def extract_bottleneck_features(model, images, device, batch_size=64):
 def generate_samples_batched(model, ddpm, sampler, num_samples, device, batch_size, mode):
     """Generate fresh MNIST samples in batches using DDPM or DDIM sampling.
 
+    Each batch is timed individually. The per-sample time is estimated by dividing
+    the batch time by the batch size (samples within a batch are generated in parallel).
+
     Args:
         model: UNet noise prediction model.
         ddpm: DDPM diffusion scheduler instance.
@@ -161,26 +165,36 @@ def generate_samples_batched(model, ddpm, sampler, num_samples, device, batch_si
         mode: Sampling mode, either 'ddpm' or 'ddim'.
 
     Returns:
-        Tensor of shape (num_samples, 1, 28, 28) with generated images in [-1, 1] range.
+        Tuple of (samples, per_sample_times) where:
+            samples: Tensor of shape (num_samples, 1, 28, 28) in [-1, 1] range.
+            per_sample_times: List of floats with estimated per-sample generation time.
     """
     model.eval()
     all_samples = []
+    per_sample_times = []
     samples_remaining = num_samples
 
     while samples_remaining > 0:
         current_batch_size = min(batch_size, samples_remaining)
         sample_shape = (current_batch_size, 1, 28, 28)
 
+        batch_start_time = time.time()
         if mode == 'ddim' and sampler is not None:
             batch_samples = sampler.ddim_sample_loop(model, sample_shape)
         else:
             batch_samples = ddpm.p_sample_loop(model, sample_shape)
+        batch_elapsed_time = time.time() - batch_start_time
+
+        # Estimate per-sample time by dividing batch time evenly
+        time_per_sample = batch_elapsed_time / current_batch_size
+        per_sample_times.extend([time_per_sample] * current_batch_size)
 
         all_samples.append(batch_samples.cpu())
         samples_remaining -= current_batch_size
-        print(f"  Generated {num_samples - samples_remaining}/{num_samples} samples")
+        print(f"  Generated {num_samples - samples_remaining}/{num_samples} samples "
+              f"({batch_elapsed_time:.2f}s for batch of {current_batch_size})")
 
-    return torch.cat(all_samples, dim=0)
+    return torch.cat(all_samples, dim=0), per_sample_times
 
 
 def load_real_samples(num_samples):
@@ -229,7 +243,7 @@ def create_umap_plot(
         real_features: Numpy array of shape (N_real, feature_dim) with real sample features.
         generated_features: Numpy array of shape (N_gen, feature_dim) with generated features.
         real_labels: Numpy array of shape (N_real,) with digit class labels (0-9).
-        output_path: File path for saving the plot as PNG.
+        output_path: File path for saving the plot (PDF for Overleaf import).
         umap_neighbors: UMAP n_neighbors parameter (controls local vs global balance).
         umap_min_dist: UMAP min_dist parameter (controls cluster tightness).
     """
@@ -394,22 +408,41 @@ def main():
         print(f"\nGenerating {args.num_generated} samples using DDPM "
               f"({ddpm.timesteps} steps)")
 
-    # Step 1: Generate fresh samples
+    # Step 1: Generate fresh samples with per-sample timing
     print("\n--- Step 1: Generating samples ---")
     generation_start_time = time.time()
-    generated_images = generate_samples_batched(
+    generated_images, per_sample_times = generate_samples_batched(
         model, ddpm, sampler, args.num_generated, device, args.batch_size, args.mode,
     )
     generation_time = time.time() - generation_start_time
     print(f"Generation complete: {generation_time:.2f}s")
 
-    # Step 2: Load real MNIST samples
-    print("\n--- Step 2: Loading real MNIST samples ---")
+    # Step 2: Save sample grid and profiling info alongside the UMAP plot
+    print("\n--- Step 2: Saving sample grid and profile ---")
+    nrow = int(args.num_generated ** 0.5)  # Approximate square grid
+    nrow = max(nrow, 1)
+    grid_path = os.path.join(run_directory, 'grid.pdf')
+    save_images(generated_images, grid_path, nrow=nrow)
+    print(f"Sample grid saved: {grid_path}")
+
+    profile_path = os.path.join(run_directory, 'profile.txt')
+    write_profile(
+        profile_path=profile_path,
+        per_sample_times=per_sample_times,
+        mode=args.mode,
+        ddim_steps=args.ddim_steps if args.mode == 'ddim' else None,
+        eta=args.eta if args.mode == 'ddim' else None,
+        total_timesteps=ddpm.timesteps,
+    )
+    print(f"Profile saved: {profile_path}")
+
+    # Step 3: Load real MNIST samples
+    print("\n--- Step 3: Loading real MNIST samples ---")
     real_images, real_labels = load_real_samples(args.num_real)
     print(f"Loaded {len(real_images)} real samples with labels")
 
-    # Step 3: Extract bottleneck features
-    print("\n--- Step 3: Extracting bottleneck features ---")
+    # Step 4: Extract bottleneck features
+    print("\n--- Step 4: Extracting bottleneck features ---")
     feature_extraction_start_time = time.time()
 
     print("  Extracting features from real images...")
@@ -427,11 +460,11 @@ def main():
     feature_extraction_time = time.time() - feature_extraction_start_time
     print(f"Feature extraction complete: {feature_extraction_time:.2f}s")
 
-    # Step 4: Run UMAP and create visualization
-    print("\n--- Step 4: Running UMAP and creating plot ---")
+    # Step 5: Run UMAP and create visualization
+    print("\n--- Step 5: Running UMAP and creating plot ---")
     umap_start_time = time.time()
 
-    plot_path = os.path.join(run_directory, 'real_vs_generated.png')
+    plot_path = os.path.join(run_directory, 'real_vs_generated.pdf')
     create_umap_plot(
         real_features=real_features.numpy(),
         generated_features=generated_features.numpy(),
@@ -446,7 +479,7 @@ def main():
 
     total_time = time.time() - total_start_time
 
-    # Step 5: Save metadata
+    # Step 6: Save metadata
     metadata_path = os.path.join(run_directory, 'metadata.txt')
     write_metadata(
         metadata_path=metadata_path,

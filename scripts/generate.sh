@@ -15,12 +15,12 @@
 #
 # Output structure (timestamped to avoid overwriting):
 #   generated_samples/20260207_143052-ddpm/
-#     grid.png                          # All samples in a grid
+#     grid.pdf                          # All samples in a grid (PDF for Overleaf)
 #     profile.txt                       # Per-sample timing + averages
 #     sample_000/                       # Per-sample subfolder
-#       final.png                       # Final generated image
-#       denoising_progression.png       # Horizontal strip of denoising steps
-#       step_00_t0999.png ... step_10_t0000.png  # Individual denoising steps (every 10%)
+#       final.pdf                       # Final generated image
+#       denoising_progression.pdf       # Horizontal strip of denoising steps
+#       step_00_t0999.pdf ... step_10_t0000.pdf  # Individual denoising steps (every 10%)
 #     sample_001/
 #       ...
 #

@@ -174,7 +174,7 @@ def compute_denoising_intermediate_steps_ddim(timestep_sequence):
 
 
 def save_single_image(tensor, path):
-    """Save a single-channel image tensor as a PNG file.
+    """Save a single-channel image tensor as a PDF file (for Overleaf import).
 
     Args:
         tensor: Image tensor of shape (1, 1, H, W) in [-1, 1].
@@ -199,7 +199,7 @@ def save_denoising_steps(intermediates, sample_directory):
         sample_directory: Directory path where step images are saved.
     """
     for step_number, (timestep, image_tensor) in enumerate(intermediates):
-        step_path = os.path.join(sample_directory, f'step_{step_number:02d}_t{timestep:04d}.png')
+        step_path = os.path.join(sample_directory, f'step_{step_number:02d}_t{timestep:04d}.pdf')
         save_single_image(image_tensor, step_path)
 
 
@@ -348,14 +348,14 @@ def main():
         all_samples.append(sample)
 
         # Save final generated image
-        final_image_path = os.path.join(sample_directory, 'final.png')
+        final_image_path = os.path.join(sample_directory, 'final.pdf')
         save_single_image(sample, final_image_path)
 
         # Save each denoising step as an individual image
         save_denoising_steps(intermediates, sample_directory)
 
         # Save denoising progression strip for this sample
-        progression_path = os.path.join(sample_directory, 'denoising_progression.png')
+        progression_path = os.path.join(sample_directory, 'denoising_progression.pdf')
         save_denoising_progression_strip(intermediates, progression_path)
 
         print(f"  Sample {sample_index:3d}: {sample_elapsed_time:.3f}s "
@@ -363,7 +363,7 @@ def main():
 
     # Save grid of all final samples
     all_samples_tensor = torch.cat(all_samples, dim=0)
-    grid_path = os.path.join(run_directory, 'grid.png')
+    grid_path = os.path.join(run_directory, 'grid.pdf')
     save_images(all_samples_tensor, grid_path, nrow=args.nrow)
     print(f"\nSample grid saved: {grid_path}")
 
