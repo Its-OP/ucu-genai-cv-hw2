@@ -1,11 +1,13 @@
 """
-Unit tests for UNet architecture.
+Unit tests for UNet wrapper around diffusers.UNet2DModel.
 
-Tests: Shape transformations, gradient flow, different configurations.
+Tests: Output shape (including pad/crop transparency), gradient flow,
+determinism, numerical stability, timestep sensitivity, architecture.
 All tests follow the AAA pattern (Arrange, Act, Assert).
 """
 import pytest
 import torch
+from diffusers import UNet2DModel
 
 from models.unet import UNet
 
@@ -67,6 +69,23 @@ class TestUNetOutputShape:
         # Assert
         assert output.shape == x.shape
 
+    def test_padding_cropping_transparent_for_32x32(self, device, seed):
+        """32×32 input should pass through without padding/cropping."""
+        # Arrange
+        model = UNet(
+            image_channels=1,
+            base_channels=64,
+        ).to(device)
+        model.eval()
+        x = torch.randn(2, 1, 32, 32, device=device)
+        timestep = torch.randint(0, 1000, (2,), device=device)
+
+        # Act
+        output = model(x, timestep)
+
+        # Assert
+        assert output.shape == (2, 1, 32, 32)
+
 
 class TestUNetGradientFlow:
     """Tests for gradient flow through UNet."""
@@ -106,9 +125,9 @@ class TestUNetGradientFlow:
         loss.backward()
 
         # Assert
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                assert param.grad is not None, f"No gradient for {name}"
+        for name, parameter in model.named_parameters():
+            if parameter.requires_grad:
+                assert parameter.grad is not None, f"No gradient for {name}"
 
 
 class TestUNetDeterminism:
@@ -274,8 +293,8 @@ class TestUNetSkipConnections:
 class TestUNetArchitecture:
     """Tests for UNet architectural properties."""
 
-    def test_model_has_encoder_decoder_structure(self, device, seed):
-        """Model should have encoder and decoder blocks."""
+    def test_model_wraps_unet2d_model(self, device, seed):
+        """Model should wrap a diffusers UNet2DModel instance."""
         # Arrange
         model = UNet(
             image_channels=1,
@@ -283,21 +302,8 @@ class TestUNetArchitecture:
         ).to(device)
 
         # Assert
-        assert hasattr(model, 'encoder_blocks'), "Model should have encoder_blocks"
-        assert hasattr(model, 'decoder_blocks'), "Model should have decoder_blocks"
-        assert hasattr(model, 'bottleneck'), "Model should have bottleneck"
-        assert len(model.encoder_blocks) == len(model.decoder_blocks)
-
-    def test_model_has_time_embedding(self, device, seed):
-        """Model should have time embedding mechanism."""
-        # Arrange
-        model = UNet(
-            image_channels=1,
-            base_channels=64,
-        ).to(device)
-
-        # Assert
-        assert hasattr(model, 'positional_encoding'), "Model should have positional_encoding"
+        assert hasattr(model, 'model'), "UNet should have a .model attribute"
+        assert isinstance(model.model, UNet2DModel), "model.model should be a UNet2DModel"
 
     def test_different_timesteps_produce_different_outputs(self, device, seed):
         """Different timesteps should produce different outputs."""
@@ -332,8 +338,8 @@ class TestUNetArchitecture:
         ).to(device)
 
         # Act
-        num_params = sum(p.numel() for p in model.parameters())
+        number_of_parameters = sum(p.numel() for p in model.parameters())
 
         # Assert
         # Model should have between 1M and 50M parameters for MNIST
-        assert 1_000_000 < num_params < 50_000_000
+        assert 1_000_000 < number_of_parameters < 50_000_000
