@@ -791,9 +791,10 @@ class UNet(nn.Module):
     """
     Wrapper around UNet2DModel for DDPM noise prediction.
 
-    Pads 28x28 MNIST images to 32x32 internally (following the DDPM paper),
-    runs through a multi-level UNet, then crops back to 28x28. This makes the
-    padding/cropping transparent to the DDPM training and sampling loops.
+    Automatically pads inputs to the nearest multiple of 2^(num_downsamples)
+    for multi-level UNet compatibility, then crops back after inference.
+    For pixel-space DDPM (4 levels): pads 28x28 to 32x32.
+    For latent-space LDM  (2 levels): 4x4 passes through with no padding.
 
     Architecture (based on Ho et al. 2020):
         - Configurable resolution levels with channel multipliers
@@ -827,6 +828,14 @@ class UNet(nn.Module):
         super().__init__()
         self.image_channels = image_channels
 
+        # Required spatial multiple = 2^(number_of_downsamples).
+        # The final DownBlock never downsamples, so:
+        #   number_of_downsamples = len(channel_multipliers) - 1
+        # For pixel-space DDPM (1,2,3,3): 2^3 = 8  (28x28 padded to 32x32)
+        # For latent-space LDM  (1,2):    2^1 = 4  (4x4 needs no padding)
+        number_of_downsamples = len(channel_multipliers) - 1
+        self.spatial_multiple = 2 ** number_of_downsamples
+
         # Compute per-level channel counts: base_channels * multiplier for each level
         block_output_channels = tuple(
             base_channels * multiplier for multiplier in channel_multipliers
@@ -847,8 +856,13 @@ class UNet(nn.Module):
         """
         Predict noise epsilon_theta(x_t, t) for the given noisy input and timestep.
 
-        Internally pads input to the next multiple of 8 (e.g. 28x28 -> 32x32),
-        runs through UNet2DModel, then crops back to the original dimensions.
+        Internally pads input to the next multiple of 2^(num_downsamples) for
+        multi-level UNet compatibility, runs through UNet2DModel, then crops
+        back to the original dimensions. The required multiple is computed
+        automatically from the number of channel_multipliers:
+            spatial_multiple = 2^(len(channel_multipliers) - 1)
+        For pixel-space DDPM (4 levels): 28x28 → pad to 32x32.
+        For latent-space LDM  (2 levels): 4x4 → no padding needed.
 
         Args:
             x: Noisy images, shape (batch_size, channels, height, width).
@@ -861,11 +875,13 @@ class UNet(nn.Module):
         original_height = x.shape[2]
         original_width = x.shape[3]
 
-        # Pad to the next multiple of 8 for multi-level UNet compatibility
-        # For 28x28 -> 32x32: pad 2 pixels on each side
+        # Pad to the next multiple of self.spatial_multiple (= 2^num_downsamples)
+        # for multi-level UNet compatibility.
+        # E.g. pixel DDPM (4 levels): multiple=8, so 28x28 -> 32x32
+        # E.g. latent LDM  (2 levels): multiple=4, so 4x4 -> 4x4 (no-op)
         # F.pad format: (left, right, top, bottom)
-        pad_height = (8 - original_height % 8) % 8
-        pad_width = (8 - original_width % 8) % 8
+        pad_height = (self.spatial_multiple - original_height % self.spatial_multiple) % self.spatial_multiple
+        pad_width = (self.spatial_multiple - original_width % self.spatial_multiple) % self.spatial_multiple
         pad_top = pad_height // 2
         pad_bottom = pad_height - pad_top
         pad_left = pad_width // 2

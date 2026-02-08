@@ -65,8 +65,8 @@ def parse_args():
     parser.add_argument(
         "--base_channels",
         type=int,
-        default=64,
-        help="UNet base channel count for latent space (default: 64)",
+        default=32,
+        help="UNet base channel count for latent space (default: 32)",
     )
     parser.add_argument(
         "--channel_multipliers",
@@ -78,8 +78,8 @@ def parse_args():
     parser.add_argument(
         "--layers_per_block",
         type=int,
-        default=1,
-        help="ResNet blocks per UNet resolution level (default: 1)",
+        default=4,
+        help="ResNet blocks per UNet resolution level (default: 4)",
     )
     parser.add_argument(
         "--attention_levels",
