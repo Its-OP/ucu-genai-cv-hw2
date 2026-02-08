@@ -21,13 +21,13 @@
 set -e
 
 # Default configuration
-EPOCHS=20
+EPOCHS=100
 LEARNING_RATE="1e-4"
 BATCH_SIZE=512
 KL_WEIGHT="1e-6"
 BASE_CHANNELS=64
 LATENT_CHANNELS=2
-SAMPLE_EVERY=4
+SAMPLE_EVERY=10
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
