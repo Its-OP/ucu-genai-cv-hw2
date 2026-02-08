@@ -23,9 +23,13 @@ import numpy as np
 import torch
 import umap
 
-from scripts.python.generate import get_device, load_checkpoint, write_profile
 from models.ddim import DDIMSampler
-from models.utils import save_images
+from models.utils import (
+    get_device,
+    load_unet_checkpoint,
+    save_images,
+    write_generation_profile,
+)
 from data import test_dataset
 
 
@@ -348,7 +352,7 @@ def main():
     device = get_device(args.device)
     print(f"Using device: {device}")
 
-    model, ddpm, config = load_checkpoint(args.checkpoint, device)
+    model, ddpm, config = load_unet_checkpoint(args.checkpoint, device)
 
     # Setup sampler for generation
     sampler = None
@@ -380,7 +384,7 @@ def main():
     print(f"Sample grid saved: {grid_path}")
 
     profile_path = os.path.join(run_directory, 'profile.txt')
-    write_profile(
+    write_generation_profile(
         profile_path=profile_path,
         per_sample_times=per_sample_times,
         mode=args.mode,

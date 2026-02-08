@@ -5,15 +5,13 @@ Trains a Variational Autoencoder to compress padded 1x32x32 MNIST images
 into a 2x4x4 latent space, regularized by KL divergence against N(0, I).
 
 Usage:
-    python -m scripts.python.train_vae --epochs 100 --lr 1e-4
+    python -m scripts.python.train_vae
 """
 import argparse
-import copy
 import time
 from datetime import datetime
 
 import torch
-import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
@@ -21,83 +19,18 @@ from tqdm import tqdm
 from data import get_train_loader, get_test_loader
 from models.vae import VAE
 from models.utils import (
+    ExponentialMovingAverage,
+    get_device,
+    pad_to_32,
+    save_checkpoint,
     setup_experiment_folder,
     save_images,
     plot_loss_curves,
     log_config,
     log_epoch,
     save_performance_metrics,
+    save_latent_space_scatter,
 )
-
-
-class ExponentialMovingAverage:
-    """
-    Exponential Moving Average (EMA) of model parameters.
-
-    Maintains shadow copies of model parameters that are updated as:
-        shadow_param = decay * shadow_param + (1 - decay) * param
-
-    Used to produce smoother, higher-quality reconstructions during inference.
-
-    Args:
-        model: The model whose parameters will be tracked.
-        decay (float): EMA decay rate. Higher values give smoother averaging.
-                       Default: 0.995 (standard for small models).
-    """
-
-    def __init__(self, model, decay=0.995):
-        self.decay = decay
-        # Deep copy all parameters as shadow weights
-        self.shadow_parameters = [
-            parameter.clone().detach() for parameter in model.parameters()
-        ]
-
-    def update(self, model):
-        """Update shadow parameters with current model parameters.
-
-        Formula: shadow = decay * shadow + (1 - decay) * param
-        """
-        for shadow_parameter, model_parameter in zip(
-            self.shadow_parameters, model.parameters()
-        ):
-            shadow_parameter.data.mul_(self.decay).add_(
-                model_parameter.data, alpha=1.0 - self.decay
-            )
-
-    def apply_shadow(self, model):
-        """Replace model parameters with shadow (EMA) parameters for inference."""
-        self.backup_parameters = [
-            parameter.clone() for parameter in model.parameters()
-        ]
-        for model_parameter, shadow_parameter in zip(
-            model.parameters(), self.shadow_parameters
-        ):
-            model_parameter.data.copy_(shadow_parameter.data)
-
-    def restore(self, model):
-        """Restore original model parameters after inference."""
-        for model_parameter, backup_parameter in zip(
-            model.parameters(), self.backup_parameters
-        ):
-            model_parameter.data.copy_(backup_parameter.data)
-
-
-def pad_to_32(images: torch.Tensor) -> torch.Tensor:
-    """
-    Pad 28x28 MNIST images to 32x32 using reflect padding.
-
-    This matches the UNet wrapper's padding strategy so the VAE
-    operates on the same 32x32 input space.
-
-    Padding: 2 pixels on each side (left, right, top, bottom).
-
-    Args:
-        images: Tensor of shape (B, C, 28, 28).
-
-    Returns:
-        Padded tensor of shape (B, C, 32, 32).
-    """
-    return F.pad(images, (2, 2, 2, 2), mode="reflect")
 
 
 def parse_args():
@@ -143,17 +76,6 @@ def parse_args():
         help="Generate reconstruction samples every N epochs (default: 10)",
     )
     return parser.parse_args()
-
-
-def get_device():
-    """Get best available device."""
-    if torch.cuda.is_available():
-        # Enable TensorFloat32 for faster matmul on Ampere+ GPUs
-        torch.set_float32_matmul_precision("high")
-        return torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
 
 
 def train_epoch(model, optimizer, loader, device, kl_weight, scaler=None, ema=None):
@@ -291,43 +213,12 @@ def save_reconstruction_comparison(model, loader, device, path, num_images=10):
     plt.close()
 
 
-def save_checkpoint(model, checkpoint_path, config, epoch, train_losses, eval_losses):
-    """Save VAE checkpoint with EMA weights and configuration.
-
-    Note: Call this while EMA weights are applied to the model
-    (after ema.apply_shadow()) so model.state_dict() returns EMA weights.
-
-    Args:
-        model: The model with EMA weights currently applied.
-        checkpoint_path: Path to save the .pt file.
-        config: Dict with model architecture config.
-        epoch: Current epoch number (0-indexed).
-        train_losses: Dict of training loss components.
-        eval_losses: Dict of evaluation loss components.
-    """
-    # Handle torch.compile wrapper: extract original module's state_dict
-    if hasattr(model, "_orig_mod"):
-        model_state_dict = model._orig_mod.state_dict()
-    else:
-        model_state_dict = model.state_dict()
-
-    checkpoint = {
-        "model_state_dict": model_state_dict,
-        "config": config,
-        "epoch": epoch,
-        "train_loss": train_losses["total_loss"],
-        "eval_loss": eval_losses["total_loss"],
-        "train_reconstruction_loss": train_losses["reconstruction_loss"],
-        "train_kl_loss": train_losses["kl_loss"],
-        "eval_reconstruction_loss": eval_losses["reconstruction_loss"],
-        "eval_kl_loss": eval_losses["kl_loss"],
-    }
-    torch.save(checkpoint, checkpoint_path)
-
-
 def main():
     args = parse_args()
     device = get_device()
+    if device.type == "cuda":
+        # Enable TensorFloat32 for faster matmul on Ampere+ GPUs
+        torch.set_float32_matmul_precision("high")
     print(f"Using device: {device}")
 
     # Create data loaders (with optional batch size override)
@@ -337,7 +228,10 @@ def main():
 
     # Setup experiment folder
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    exp_dir = setup_experiment_folder(f"./experiments/{timestamp}-vae")
+    exp_dir = setup_experiment_folder(
+        f"./experiments/{timestamp}-vae",
+        extra_subfolders=['latent_space'],
+    )
     print(f"Experiment directory: {exp_dir}")
 
     # Parse architecture arguments into tuples
@@ -440,9 +334,23 @@ def main():
             comparison_path = f"{exp_dir}/epoch_samples/epoch_{epoch + 1:03d}.png"
             save_reconstruction_comparison(model, test_loader, device, comparison_path)
 
+            # Save latent space scatter plot showing encoder clustering progress
+            scatter_path = f"{exp_dir}/latent_space/epoch_{epoch + 1:03d}.png"
+            save_latent_space_scatter(model, test_loader, device, scatter_path)
+
             # Save checkpoint with EMA weights (model currently has EMA applied)
             checkpoint_path = f"{exp_dir}/checkpoints/checkpoint_epoch_{epoch + 1:03d}.pt"
-            save_checkpoint(model, checkpoint_path, model_config, epoch, train_losses, eval_losses)
+            save_checkpoint(
+                model, checkpoint_path, model_config, epoch,
+                train_loss=train_losses["total_loss"],
+                eval_loss=eval_losses["total_loss"],
+                extra_fields={
+                    "train_reconstruction_loss": train_losses["reconstruction_loss"],
+                    "train_kl_loss": train_losses["kl_loss"],
+                    "eval_reconstruction_loss": eval_losses["reconstruction_loss"],
+                    "eval_kl_loss": eval_losses["kl_loss"],
+                },
+            )
             print(f"  Checkpoint saved: {checkpoint_path}")
 
             model.train()
@@ -459,19 +367,15 @@ def main():
     # Save final checkpoint with EMA weights
     final_checkpoint_path = f"{exp_dir}/checkpoints/checkpoint_final.pt"
     save_checkpoint(
-        model,
-        final_checkpoint_path,
-        model_config,
+        model, final_checkpoint_path, model_config,
         epoch=args.epochs - 1,
-        train_losses={
-            "total_loss": train_losses_history[-1],
-            "reconstruction_loss": train_losses["reconstruction_loss"],
-            "kl_loss": train_losses["kl_loss"],
-        },
-        eval_losses={
-            "total_loss": eval_losses_history[-1],
-            "reconstruction_loss": eval_losses["reconstruction_loss"],
-            "kl_loss": eval_losses["kl_loss"],
+        train_loss=train_losses_history[-1],
+        eval_loss=eval_losses_history[-1],
+        extra_fields={
+            "train_reconstruction_loss": train_losses["reconstruction_loss"],
+            "train_kl_loss": train_losses["kl_loss"],
+            "eval_reconstruction_loss": eval_losses["reconstruction_loss"],
+            "eval_kl_loss": eval_losses["kl_loss"],
         },
     )
     print(f"Final checkpoint saved: {final_checkpoint_path}")
@@ -480,6 +384,13 @@ def main():
     save_reconstruction_comparison(
         model, test_loader, device,
         f"{exp_dir}/final_samples/final_reconstruction.png",
+    )
+
+    # Save final latent space scatter plot
+    print("Generating final latent space visualization...")
+    save_latent_space_scatter(
+        model, test_loader, device,
+        f"{exp_dir}/final_samples/latent_space.png",
     )
 
     # Save loss curves

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Train DDPM model with GPU monitoring
 # Run from the root of the repository
-# Usage: bash scripts/sh/train.sh [OPTIONS]
+# Usage: bash scripts/sh/train-ddpm.sh [OPTIONS]
 #
 # Options:
 #   --epochs N          Number of epochs (default: 100)
@@ -88,7 +88,7 @@ screen -dmS $SESSION_MONITOR bash -c "watch -n 1 nvidia-smi"
 # Start training session
 echo "Starting training in screen session: $SESSION_TRAIN"
 screen -dmS $SESSION_TRAIN bash -c "
-    python -m scripts.python.train \
+    python -m scripts.python.train_ddpm \
         --epochs $EPOCHS \
         --lr $LEARNING_RATE \
         --batch_size $BATCH_SIZE \

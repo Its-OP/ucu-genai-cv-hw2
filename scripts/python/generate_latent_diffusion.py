@@ -32,11 +32,18 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import torch
 
-from models.unet import UNet
-from models.vae import VAE
 from models.ddpm import DDPM
 from models.ddim import DDIMSampler
-from models.utils import save_images
+from models.utils import (
+    get_device,
+    load_unet_checkpoint,
+    load_vae_checkpoint,
+    compute_denoising_intermediate_steps_ddpm,
+    compute_denoising_intermediate_steps_ddim,
+    save_single_image,
+    save_images,
+    write_generation_profile,
+)
 
 
 def parse_args():
@@ -101,156 +108,8 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_device(requested_device=None):
-    """Get the best available device, or use the requested one."""
-    if requested_device is not None:
-        return torch.device(requested_device)
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
-
-def load_vae(checkpoint_path: str, device: torch.device) -> VAE:
-    """
-    Load a pre-trained VAE from checkpoint for decoding.
-
-    Args:
-        checkpoint_path: Path to the VAE .pt checkpoint file.
-        device: Device to load the VAE onto.
-
-    Returns:
-        VAE model in eval mode (frozen).
-    """
-    print(f"Loading VAE checkpoint: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
-
-    vae_config = checkpoint["config"]
-    print(
-        f"  VAE config: latent_channels={vae_config['latent_channels']}, "
-        f"base_channels={vae_config['base_channels']}"
-    )
-
-    vae = VAE(
-        image_channels=vae_config.get("image_channels", 1),
-        latent_channels=vae_config["latent_channels"],
-        base_channels=vae_config["base_channels"],
-        channel_multipliers=tuple(vae_config["channel_multipliers"]),
-        num_layers_per_block=vae_config.get("layers_per_block", 1),
-    ).to(device)
-
-    vae.load_state_dict(checkpoint["model_state_dict"])
-    vae.eval()
-    vae.requires_grad_(False)
-
-    num_params = sum(parameter.numel() for parameter in vae.parameters())
-    print(f"  VAE parameters: {num_params:,} (frozen)")
-
-    return vae
-
-
-def load_unet(checkpoint_path: str, device: torch.device):
-    """
-    Load a trained latent-space UNet from checkpoint.
-
-    Args:
-        checkpoint_path: Path to the latent UNet .pt checkpoint file.
-        device: Device to load the model onto.
-
-    Returns:
-        Tuple of (unet, ddpm, config) ready for generation.
-    """
-    print(f"Loading UNet checkpoint: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
-
-    config = checkpoint["config"]
-    print(
-        f"  UNet config: image_channels={config['image_channels']}, "
-        f"base_channels={config['base_channels']}, timesteps={config['timesteps']}"
-    )
-    print(
-        f"  Trained for {checkpoint['epoch'] + 1} epochs "
-        f"(train_loss={checkpoint['train_loss']:.6f}, eval_loss={checkpoint['eval_loss']:.6f})"
-    )
-
-    # Reconstruct latent UNet from saved config
-    channel_multipliers = tuple(config.get("channel_multipliers", (1, 2)))
-    layers_per_block = config.get("layers_per_block", 1)
-    attention_levels = tuple(config.get("attention_levels", (False, True)))
-
-    unet = UNet(
-        image_channels=config["image_channels"],
-        base_channels=config["base_channels"],
-        channel_multipliers=channel_multipliers,
-        layers_per_block=layers_per_block,
-        attention_levels=attention_levels,
-    ).to(device)
-
-    unet.load_state_dict(checkpoint["model_state_dict"])
-    unet.eval()
-
-    num_params = sum(parameter.numel() for parameter in unet.parameters())
-    print(f"  UNet parameters: {num_params:,}")
-
-    # Reconstruct DDPM scheduler
-    ddpm = DDPM(timesteps=config["timesteps"]).to(device)
-
-    return unet, ddpm, config
-
-
-def compute_denoising_intermediate_steps_ddpm(total_timesteps):
-    """Compute timestep indices at every 10% of the DDPM denoising process.
-
-    Args:
-        total_timesteps: Total number of DDPM timesteps (T).
-
-    Returns:
-        List of unique integer timestep indices for recording intermediates.
-    """
-    intermediate_steps = []
-    for percentage in range(0, 101, 10):
-        step_index = int((total_timesteps - 1) * (1.0 - percentage / 100.0))
-        intermediate_steps.append(step_index)
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_steps = []
-    for step in intermediate_steps:
-        if step not in seen:
-            seen.add(step)
-            unique_steps.append(step)
-    return unique_steps
-
-
-def compute_denoising_intermediate_steps_ddim(timestep_sequence):
-    """Compute timestep indices at every 10% of the DDIM denoising process.
-
-    Args:
-        timestep_sequence: The DDIM timestep subsequence tensor (ascending order).
-
-    Returns:
-        List of unique integer timestep indices for recording intermediates.
-    """
-    reversed_sequence = torch.flip(timestep_sequence, [0])
-    total_steps = len(reversed_sequence)
-    intermediate_steps = []
-    for percentage in range(0, 101, 10):
-        step_index = min(
-            int(percentage / 100.0 * (total_steps - 1)), total_steps - 1
-        )
-        timestep_value = reversed_sequence[step_index].item()
-        intermediate_steps.append(timestep_value)
-    seen = set()
-    unique_steps = []
-    for step in intermediate_steps:
-        if step not in seen:
-            seen.add(step)
-            unique_steps.append(step)
-    return unique_steps
-
-
 @torch.no_grad()
-def decode_latent_to_pixel(vae: VAE, latent: torch.Tensor) -> torch.Tensor:
+def decode_latent_to_pixel(vae, latent: torch.Tensor) -> torch.Tensor:
     """
     Decode latent samples to 28x28 pixel images via the VAE decoder.
 
@@ -269,25 +128,11 @@ def decode_latent_to_pixel(vae: VAE, latent: torch.Tensor) -> torch.Tensor:
     return pixel_images
 
 
-def save_single_image(tensor: torch.Tensor, path: str):
-    """Save a single-channel image tensor as a PDF file.
-
-    Args:
-        tensor: Image tensor of shape (1, 1, H, W) in [-1, 1].
-        path: Output file path.
-    """
-    image = (tensor[0, 0] + 1) / 2
-    image = image.clamp(0, 1).cpu().numpy()
-
-    plt.figure(figsize=(3, 3))
-    plt.imshow(image, cmap="gray")
-    plt.axis("off")
-    plt.savefig(path, bbox_inches="tight", dpi=100)
-    plt.close()
-
-
-def save_denoising_steps(intermediates, vae, sample_directory):
+def save_latent_denoising_steps(intermediates, vae, sample_directory):
     """Save each denoising step (decoded to pixel space) as an individual image.
+
+    Unlike the pixel-space version in models.utils, this function first decodes
+    each latent intermediate through the VAE before saving.
 
     Args:
         intermediates: List of (timestep, latent_tensor) tuples from the sampling loop.
@@ -303,8 +148,11 @@ def save_denoising_steps(intermediates, vae, sample_directory):
         save_single_image(pixel_tensor, step_path)
 
 
-def save_denoising_progression_strip(intermediates, vae, path):
+def save_latent_denoising_progression(intermediates, vae, path):
     """Save a horizontal strip showing the denoising progression (decoded to pixels).
+
+    Unlike the pixel-space version in models.utils, this function first decodes
+    each latent intermediate through the VAE before rendering.
 
     Args:
         intermediates: List of (timestep, latent_tensor) tuples.
@@ -330,58 +178,6 @@ def save_denoising_progression_strip(intermediates, vae, path):
     plt.close()
 
 
-def write_profile(
-    profile_path,
-    per_sample_times,
-    mode,
-    ddim_steps=None,
-    eta=None,
-    total_timesteps=None,
-):
-    """Write generation profiling information to a text file.
-
-    Args:
-        profile_path: Path to the output profile.txt file.
-        per_sample_times: List of per-sample generation times in seconds.
-        mode: Sampling mode ('ddpm' or 'ddim').
-        ddim_steps: Number of DDIM steps (only for ddim mode).
-        eta: DDIM eta parameter (only for ddim mode).
-        total_timesteps: Total DDPM timesteps T.
-    """
-    total_time = sum(per_sample_times)
-    average_time = total_time / len(per_sample_times) if per_sample_times else 0.0
-
-    with open(profile_path, "w") as file:
-        file.write("Latent Diffusion Generation Profile\n")
-        file.write("=" * 50 + "\n\n")
-
-        file.write("Configuration\n")
-        file.write("-" * 50 + "\n")
-        file.write(f"Sampling mode:       {mode}\n")
-        if mode == "ddim":
-            file.write(f"DDIM steps:          {ddim_steps}\n")
-            file.write(f"DDIM eta:            {eta}\n")
-        if total_timesteps is not None:
-            file.write(f"Total DDPM timesteps: {total_timesteps}\n")
-        file.write(f"Number of samples:   {len(per_sample_times)}\n\n")
-
-        file.write("Per-sample timing\n")
-        file.write("-" * 50 + "\n")
-        for sample_index, sample_time in enumerate(per_sample_times):
-            file.write(f"Sample {sample_index:3d}: {sample_time:.3f}s\n")
-
-        file.write("\n")
-        file.write("Summary\n")
-        file.write("-" * 50 + "\n")
-        file.write(f"Total generation time:   {total_time:.3f}s\n")
-        file.write(f"Average time per sample: {average_time:.3f}s\n")
-        if len(per_sample_times) > 1:
-            min_time = min(per_sample_times)
-            max_time = max(per_sample_times)
-            file.write(f"Fastest sample:          {min_time:.3f}s\n")
-            file.write(f"Slowest sample:          {max_time:.3f}s\n")
-
-
 def main():
     args = parse_args()
 
@@ -396,8 +192,8 @@ def main():
     device = get_device(args.device)
     print(f"Using device: {device}")
 
-    vae = load_vae(args.vae_checkpoint, device)
-    unet, ddpm, config = load_unet(args.unet_checkpoint, device)
+    vae = load_vae_checkpoint(args.vae_checkpoint, device)
+    unet, ddpm, config = load_unet_checkpoint(args.unet_checkpoint, device)
 
     # Determine latent shape from config
     latent_channels = config.get("latent_channels", config["image_channels"])
@@ -466,13 +262,13 @@ def main():
         save_single_image(pixel_sample, final_image_path)
 
         # Save each denoising step decoded to pixel space
-        save_denoising_steps(intermediates, vae, sample_directory)
+        save_latent_denoising_steps(intermediates, vae, sample_directory)
 
         # Save denoising progression strip
         progression_path = os.path.join(
             sample_directory, "denoising_progression.pdf"
         )
-        save_denoising_progression_strip(intermediates, vae, progression_path)
+        save_latent_denoising_progression(intermediates, vae, progression_path)
 
         print(
             f"  Sample {sample_index:3d}: {sample_elapsed_time:.3f}s "
@@ -487,7 +283,7 @@ def main():
 
     # Write profiling information
     profile_path = os.path.join(run_directory, "profile.txt")
-    write_profile(
+    write_generation_profile(
         profile_path=profile_path,
         per_sample_times=per_sample_times,
         mode=args.mode,

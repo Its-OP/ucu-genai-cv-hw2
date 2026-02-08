@@ -1,14 +1,17 @@
 """
 DDPM Training Script for MNIST.
 
+Trains a Denoising Diffusion Probabilistic Model (Ho et al. 2020)
+on MNIST digits using a custom UNet for noise prediction.
+
 Usage:
-    python -m scripts.python.train --epochs 100 --lr 1e-3
+    python -m scripts.python.train_ddpm --epochs 100 --lr 1e-3
 """
 import argparse
-import copy
 import time
 from datetime import datetime
 
+import matplotlib.pyplot as plt
 import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -18,6 +21,9 @@ from data import get_train_loader, get_test_loader
 from models.unet import UNet
 from models.ddpm import DDPM
 from models.utils import (
+    get_device,
+    ExponentialMovingAverage,
+    save_checkpoint,
     setup_experiment_folder,
     save_images,
     plot_loss_curves,
@@ -27,49 +33,6 @@ from models.utils import (
     log_epoch,
     save_performance_metrics,
 )
-
-
-class ExponentialMovingAverage:
-    """
-    Exponential Moving Average (EMA) of model parameters.
-
-    Maintains shadow copies of model parameters that are updated as:
-        shadow_param = decay * shadow_param + (1 - decay) * param
-
-    Used in the original DDPM paper (Ho et al. 2020) to produce smoother,
-    higher-quality samples during inference.
-
-    Args:
-        model: The model whose parameters will be tracked.
-        decay (float): EMA decay rate. Higher values give smoother averaging.
-                       Default: 0.995 (standard for small DDPM models).
-    """
-
-    def __init__(self, model, decay=0.995):
-        self.decay = decay
-        # Deep copy all parameters as shadow weights
-        self.shadow_parameters = [parameter.clone().detach() for parameter in model.parameters()]
-
-    def update(self, model):
-        """Update shadow parameters with current model parameters.
-
-        Formula: shadow = decay · shadow + (1 - decay) · param
-        """
-        for shadow_parameter, model_parameter in zip(self.shadow_parameters, model.parameters()):
-            shadow_parameter.data.mul_(self.decay).add_(
-                model_parameter.data, alpha=1.0 - self.decay
-            )
-
-    def apply_shadow(self, model):
-        """Replace model parameters with shadow (EMA) parameters for inference."""
-        self.backup_parameters = [parameter.clone() for parameter in model.parameters()]
-        for model_parameter, shadow_parameter in zip(model.parameters(), self.shadow_parameters):
-            model_parameter.data.copy_(shadow_parameter.data)
-
-    def restore(self, model):
-        """Restore original model parameters after inference."""
-        for model_parameter, backup_parameter in zip(model.parameters(), self.backup_parameters):
-            model_parameter.data.copy_(backup_parameter.data)
 
 
 def parse_args():
@@ -91,40 +54,29 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_device():
-    """Get best available device."""
-    if torch.cuda.is_available():
-        # Enable TensorFloat32 for faster matmul on Ampere+ GPUs
-        torch.set_float32_matmul_precision('high')
-        return torch.device('cuda')
-    elif torch.backends.mps.is_available():
-        return torch.device('mps')
-    return torch.device('cpu')
-
-
 def train_epoch(model, ddpm, optimizer, loader, device, scaler=None, ema=None):
     """Train for one epoch, updating EMA after each optimizer step."""
     model.train()
     total_loss = 0
     use_amp = scaler is not None
 
-    for x, _ in tqdm(loader, desc='Training', leave=False):
-        x = x.to(device)
-        t = torch.randint(0, ddpm.timesteps, (x.shape[0],), device=device)
+    for images, _ in tqdm(loader, desc='Training', leave=False):
+        images = images.to(device)
+        timestep = torch.randint(0, ddpm.timesteps, (images.shape[0],), device=device)
 
         optimizer.zero_grad()
 
         if use_amp:
             # Mixed precision training for CUDA
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                loss = ddpm.p_losses(model, x, t)
+                loss = ddpm.p_losses(model, images, timestep)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
         else:
-            loss = ddpm.p_losses(model, x, t)
+            loss = ddpm.p_losses(model, images, timestep)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -144,57 +96,27 @@ def evaluate(model, ddpm, loader, device, use_amp=False):
     model.eval()
     total_loss = 0
 
-    for x, _ in loader:
-        x = x.to(device)
-        t = torch.randint(0, ddpm.timesteps, (x.shape[0],), device=device)
+    for images, _ in loader:
+        images = images.to(device)
+        timestep = torch.randint(0, ddpm.timesteps, (images.shape[0],), device=device)
 
         if use_amp:
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                loss = ddpm.p_losses(model, x, t)
+                loss = ddpm.p_losses(model, images, timestep)
         else:
-            loss = ddpm.p_losses(model, x, t)
+            loss = ddpm.p_losses(model, images, timestep)
 
         total_loss += loss.item()
 
     return total_loss / len(loader)
 
 
-def save_checkpoint(model, checkpoint_path, config, epoch, train_loss, eval_loss):
-    """Save model checkpoint with EMA weights and configuration.
-
-    The checkpoint contains everything needed to reconstruct the model
-    and generate samples: architecture config + EMA-smoothed weights.
-
-    Note: Call this while EMA weights are applied to the model
-    (after ema.apply_shadow()) so model.state_dict() returns EMA weights.
-
-    Args:
-        model: The model with EMA weights currently applied.
-        checkpoint_path: Path to save the .pt file.
-        config: Dict with model architecture config (image_channels, base_channels, timesteps).
-        epoch: Current epoch number (0-indexed).
-        train_loss: Training loss at this epoch.
-        eval_loss: Evaluation loss at this epoch.
-    """
-    # Handle torch.compile wrapper: extract original module's state_dict
-    if hasattr(model, '_orig_mod'):
-        model_state_dict = model._orig_mod.state_dict()
-    else:
-        model_state_dict = model.state_dict()
-
-    checkpoint = {
-        'model_state_dict': model_state_dict,
-        'config': config,
-        'epoch': epoch,
-        'train_loss': train_loss,
-        'eval_loss': eval_loss,
-    }
-    torch.save(checkpoint, checkpoint_path)
-
-
 def main():
     args = parse_args()
     device = get_device()
+    # Enable TensorFloat32 for faster matmul on Ampere+ GPUs
+    if device.type == 'cuda':
+        torch.set_float32_matmul_precision('high')
     print(f"Using device: {device}")
 
     # Create data loaders (with optional batch size override)
@@ -204,7 +126,10 @@ def main():
 
     # Setup experiment folder
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    exp_dir = setup_experiment_folder(f'./experiments/{timestamp}-ddpm')
+    exp_dir = setup_experiment_folder(
+        f'./experiments/{timestamp}-ddpm',
+        extra_subfolders=['denoising_steps'],
+    )
     print(f"Experiment directory: {exp_dir}")
 
     # Parse architecture arguments into tuples
@@ -236,7 +161,7 @@ def main():
         attention_levels=attention_levels,
     ).to(device)
 
-    num_params = sum(p.numel() for p in model.parameters())
+    num_params = sum(parameter.numel() for parameter in model.parameters())
     print(f"Model parameters: {num_params:,}")
 
     # CUDA optimizations: compile model and enable mixed precision
@@ -291,7 +216,8 @@ def main():
         epoch_time = time.time() - epoch_start
         log_epoch(exp_dir, epoch, train_loss, eval_loss, epoch_time)
 
-        print(f"Epoch {epoch+1}/{args.epochs} | Train: {train_loss:.6f} | Eval: {eval_loss:.6f} | Time: {epoch_time:.1f}s")
+        print(f"Epoch {epoch+1}/{args.epochs} | Train: {train_loss:.6f} | "
+              f"Eval: {eval_loss:.6f} | Time: {epoch_time:.1f}s")
 
         # Generate samples and save checkpoint periodically using EMA weights
         if (epoch + 1) % args.sample_every == 0:
@@ -331,14 +257,14 @@ def main():
     save_images(final_samples, f'{exp_dir}/final_samples/final_grid.png')
 
     # Save individual final samples
-    for i in range(10):
-        img = (final_samples[i, 0] + 1) / 2
-        img = img.clamp(0, 1).cpu().numpy()
-        import matplotlib.pyplot as plt
+    for sample_index in range(10):
+        image = (final_samples[sample_index, 0] + 1) / 2
+        image = image.clamp(0, 1).cpu().numpy()
         plt.figure(figsize=(3, 3))
-        plt.imshow(img, cmap='gray')
+        plt.imshow(image, cmap='gray')
         plt.axis('off')
-        plt.savefig(f'{exp_dir}/final_samples/sample_{i}.png', bbox_inches='tight', dpi=100)
+        plt.savefig(f'{exp_dir}/final_samples/sample_{sample_index}.png',
+                    bbox_inches='tight', dpi=100)
         plt.close()
 
     # Denoising progression
@@ -357,12 +283,8 @@ def main():
 
     # Save performance metrics
     save_performance_metrics(
-        exp_dir,
-        total_time,
-        args.epochs,
-        inference_time,
-        train_losses[-1],
-        eval_losses[-1],
+        exp_dir, total_time, args.epochs, inference_time,
+        train_losses[-1], eval_losses[-1],
     )
 
     print(f"All outputs saved to {exp_dir}")

@@ -19,7 +19,6 @@ import time
 from datetime import datetime
 
 import torch
-import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
@@ -29,6 +28,11 @@ from models.unet import UNet
 from models.vae import VAE
 from models.ddpm import DDPM
 from models.utils import (
+    ExponentialMovingAverage,
+    pad_to_32,
+    get_device,
+    load_vae_checkpoint,
+    save_checkpoint,
     setup_experiment_folder,
     save_images,
     plot_loss_curves,
@@ -36,107 +40,6 @@ from models.utils import (
     log_epoch,
     save_performance_metrics,
 )
-
-
-class ExponentialMovingAverage:
-    """
-    Exponential Moving Average (EMA) of model parameters.
-
-    Maintains shadow copies of model parameters that are updated as:
-        shadow_param = decay * shadow_param + (1 - decay) * param
-
-    Args:
-        model: The model whose parameters will be tracked.
-        decay (float): EMA decay rate. Default: 0.995.
-    """
-
-    def __init__(self, model, decay=0.995):
-        self.decay = decay
-        self.shadow_parameters = [
-            parameter.clone().detach() for parameter in model.parameters()
-        ]
-
-    def update(self, model):
-        """Update shadow parameters: shadow = decay * shadow + (1 - decay) * param"""
-        for shadow_parameter, model_parameter in zip(
-            self.shadow_parameters, model.parameters()
-        ):
-            shadow_parameter.data.mul_(self.decay).add_(
-                model_parameter.data, alpha=1.0 - self.decay
-            )
-
-    def apply_shadow(self, model):
-        """Replace model parameters with shadow (EMA) parameters for inference."""
-        self.backup_parameters = [
-            parameter.clone() for parameter in model.parameters()
-        ]
-        for model_parameter, shadow_parameter in zip(
-            model.parameters(), self.shadow_parameters
-        ):
-            model_parameter.data.copy_(shadow_parameter.data)
-
-    def restore(self, model):
-        """Restore original model parameters after inference."""
-        for model_parameter, backup_parameter in zip(
-            model.parameters(), self.backup_parameters
-        ):
-            model_parameter.data.copy_(backup_parameter.data)
-
-
-def pad_to_32(images: torch.Tensor) -> torch.Tensor:
-    """
-    Pad 28x28 MNIST images to 32x32 using reflect padding.
-
-    Args:
-        images: Tensor of shape (B, C, 28, 28).
-
-    Returns:
-        Padded tensor of shape (B, C, 32, 32).
-    """
-    return F.pad(images, (2, 2, 2, 2), mode="reflect")
-
-
-def load_vae(checkpoint_path: str, device: torch.device) -> VAE:
-    """
-    Load a pre-trained VAE from checkpoint and freeze all parameters.
-
-    The VAE is set to eval mode with requires_grad=False so it acts
-    as a fixed encoder/decoder during latent diffusion training.
-
-    Args:
-        checkpoint_path: Path to the VAE .pt checkpoint file.
-        device: Device to load the VAE onto.
-
-    Returns:
-        Frozen VAE model in eval mode.
-    """
-    print(f"Loading VAE checkpoint: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
-
-    vae_config = checkpoint["config"]
-    print(
-        f"  VAE config: latent_channels={vae_config['latent_channels']}, "
-        f"base_channels={vae_config['base_channels']}, "
-        f"channel_multipliers={vae_config['channel_multipliers']}"
-    )
-
-    # Reconstruct VAE from saved config
-    vae = VAE(
-        image_channels=vae_config.get("image_channels", 1),
-        latent_channels=vae_config["latent_channels"],
-        base_channels=vae_config["base_channels"],
-        channel_multipliers=tuple(vae_config["channel_multipliers"]),
-        num_layers_per_block=vae_config.get("layers_per_block", 1),
-    ).to(device)
-
-    vae.load_state_dict(checkpoint["model_state_dict"])
-    vae.eval()
-    vae.requires_grad_(False)
-
-    num_params = sum(parameter.numel() for parameter in vae.parameters())
-    print(f"  VAE parameters: {num_params:,} (frozen)")
-
-    return vae
 
 
 def parse_args():
@@ -186,16 +89,6 @@ def parse_args():
         help="Attention flags per UNet level, 0 or 1 (default: 0 1)",
     )
     return parser.parse_args()
-
-
-def get_device():
-    """Get best available device."""
-    if torch.cuda.is_available():
-        torch.set_float32_matmul_precision("high")
-        return torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
 
 
 @torch.no_grad()
@@ -322,41 +215,18 @@ def generate_samples(unet, ddpm, vae, num_samples, latent_channels, device):
     return pixel_samples
 
 
-def save_checkpoint(unet, checkpoint_path, config, epoch, train_loss, eval_loss):
-    """Save latent diffusion UNet checkpoint.
-
-    Note: Call this while EMA weights are applied to the model.
-
-    Args:
-        unet: The UNet model with EMA weights currently applied.
-        checkpoint_path: Path to save the .pt file.
-        config: Dict with model architecture config.
-        epoch: Current epoch number (0-indexed).
-        train_loss: Training loss at this epoch.
-        eval_loss: Evaluation loss at this epoch.
-    """
-    if hasattr(unet, "_orig_mod"):
-        model_state_dict = unet._orig_mod.state_dict()
-    else:
-        model_state_dict = unet.state_dict()
-
-    checkpoint = {
-        "model_state_dict": model_state_dict,
-        "config": config,
-        "epoch": epoch,
-        "train_loss": train_loss,
-        "eval_loss": eval_loss,
-    }
-    torch.save(checkpoint, checkpoint_path)
-
-
 def main():
     args = parse_args()
     device = get_device()
+
+    # Enable TensorFloat-32 matmul precision on CUDA for faster training
+    if device.type == "cuda":
+        torch.set_float32_matmul_precision("high")
+
     print(f"Using device: {device}")
 
     # Load frozen VAE
-    vae = load_vae(args.vae_checkpoint, device)
+    vae = load_vae_checkpoint(args.vae_checkpoint, device)
 
     # Get latent channels from VAE config
     latent_channels = vae.latent_channels
