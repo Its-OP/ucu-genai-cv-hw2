@@ -78,8 +78,8 @@ def parse_args():
     parser.add_argument(
         "--layers_per_block",
         type=int,
-        default=2,
-        help="ResNet blocks per UNet resolution level (default: 2)",
+        default=4,
+        help="ResNet blocks per UNet resolution level (default: 4)",
     )
     parser.add_argument(
         "--attention_levels",
