@@ -9,10 +9,10 @@ step visualization (at every 10% of the process), and dedicated subfolders.
 Output directories are timestamped to avoid overwriting previous runs.
 
 Usage:
-    python -m models.generate --checkpoint path/to/checkpoint.pt
-    python -m models.generate --checkpoint path/to/checkpoint.pt --mode ddim --ddim_steps 50
-    python -m models.generate --checkpoint path/to/checkpoint.pt --mode ddim --ddim_steps 100 --eta 0.5
-    python -m models.generate --checkpoint path/to/checkpoint.pt --num_samples 25 --nrow 5
+    python -m scripts.python.generate --checkpoint path/to/checkpoint.pt
+    python -m scripts.python.generate --checkpoint path/to/checkpoint.pt --mode ddim --ddim_steps 50
+    python -m scripts.python.generate --checkpoint path/to/checkpoint.pt --mode ddim --ddim_steps 100 --eta 0.5
+    python -m scripts.python.generate --checkpoint path/to/checkpoint.pt --num_samples 25 --nrow 5
 """
 import argparse
 import os

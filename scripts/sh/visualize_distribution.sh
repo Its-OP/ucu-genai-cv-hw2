@@ -3,13 +3,13 @@
 # Run from the root of the repository
 #
 # Usage:
-#   bash scripts/visualize_distribution.sh <checkpoint_path> [OPTIONS]
+#   bash scripts/sh/visualize_distribution.sh <checkpoint_path> [OPTIONS]
 #
 # Examples:
-#   bash scripts/visualize_distribution.sh path/to/checkpoint.pt
-#   bash scripts/visualize_distribution.sh path/to/checkpoint.pt --mode ddim --ddim_steps 50
-#   bash scripts/visualize_distribution.sh path/to/checkpoint.pt --num_generated 2000 --num_real 2000
-#   bash scripts/visualize_distribution.sh path/to/checkpoint.pt --umap_neighbors 30 --umap_min_dist 0.05
+#   bash scripts/sh/visualize_distribution.sh path/to/checkpoint.pt
+#   bash scripts/sh/visualize_distribution.sh path/to/checkpoint.pt --mode ddim --ddim_steps 50
+#   bash scripts/sh/visualize_distribution.sh path/to/checkpoint.pt --num_generated 2000 --num_real 2000
+#   bash scripts/sh/visualize_distribution.sh path/to/checkpoint.pt --umap_neighbors 30 --umap_min_dist 0.05
 #
 # Output structure (timestamped to avoid overwriting):
 #   distribution_plots/20260207_143052/
@@ -34,11 +34,11 @@ set -e
 
 if [ -z "$1" ]; then
     echo "Error: checkpoint path is required"
-    echo "Usage: bash scripts/visualize_distribution.sh <checkpoint_path> [OPTIONS]"
+    echo "Usage: bash scripts/sh/visualize_distribution.sh <checkpoint_path> [OPTIONS]"
     exit 1
 fi
 
 CHECKPOINT="$1"
 shift  # Remove checkpoint from args, pass remaining options through
 
-python -m models.visualize_distribution --checkpoint "$CHECKPOINT" "$@"
+python -m scripts.python.visualize_distribution --checkpoint "$CHECKPOINT" "$@"

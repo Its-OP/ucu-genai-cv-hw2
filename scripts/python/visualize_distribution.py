@@ -9,9 +9,9 @@ reduces these to 2D for visualization. This directly measures whether the
 generated digits occupy the same pixel-space manifold as real MNIST digits.
 
 Usage:
-    python -m models.visualize_distribution --checkpoint path/to/checkpoint.pt
-    python -m models.visualize_distribution --checkpoint path/to/checkpoint.pt --mode ddim --ddim_steps 50
-    python -m models.visualize_distribution --checkpoint path/to/checkpoint.pt --num_generated 2000 --num_real 2000
+    python -m scripts.python.visualize_distribution --checkpoint path/to/checkpoint.pt
+    python -m scripts.python.visualize_distribution --checkpoint path/to/checkpoint.pt --mode ddim --ddim_steps 50
+    python -m scripts.python.visualize_distribution --checkpoint path/to/checkpoint.pt --num_generated 2000 --num_real 2000
 """
 import argparse
 import os
@@ -23,7 +23,7 @@ import numpy as np
 import torch
 import umap
 
-from models.generate import get_device, load_checkpoint, write_profile
+from scripts.python.generate import get_device, load_checkpoint, write_profile
 from models.ddim import DDIMSampler
 from models.utils import save_images
 from data import test_dataset

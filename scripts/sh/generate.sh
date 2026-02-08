@@ -3,15 +3,15 @@
 # Run from the root of the repository
 #
 # Usage:
-#   bash scripts/generate.sh <checkpoint_path> [OPTIONS]
+#   bash scripts/sh/generate.sh <checkpoint_path> [OPTIONS]
 #
 # Examples (DDPM — default, full 1000 steps):
-#   bash scripts/generate.sh experiments/20260207-ddpm/checkpoints/checkpoint_final.pt
-#   bash scripts/generate.sh path/to/checkpoint.pt --num_samples 25 --nrow 5
+#   bash scripts/sh/generate.sh experiments/20260207-ddpm/checkpoints/checkpoint_final.pt
+#   bash scripts/sh/generate.sh path/to/checkpoint.pt --num_samples 25 --nrow 5
 #
 # Examples (DDIM — faster sampling with fewer steps):
-#   bash scripts/generate.sh path/to/checkpoint.pt --mode ddim --ddim_steps 50
-#   bash scripts/generate.sh path/to/checkpoint.pt --mode ddim --ddim_steps 100 --eta 0.5
+#   bash scripts/sh/generate.sh path/to/checkpoint.pt --mode ddim --ddim_steps 50
+#   bash scripts/sh/generate.sh path/to/checkpoint.pt --mode ddim --ddim_steps 100 --eta 0.5
 #
 # Output structure (timestamped to avoid overwriting):
 #   generated_samples/20260207_143052-ddpm/
@@ -36,11 +36,11 @@ set -e
 
 if [ -z "$1" ]; then
     echo "Error: checkpoint path is required"
-    echo "Usage: bash scripts/generate.sh <checkpoint_path> [OPTIONS]"
+    echo "Usage: bash scripts/sh/generate.sh <checkpoint_path> [OPTIONS]"
     exit 1
 fi
 
 CHECKPOINT="$1"
 shift  # Remove checkpoint from args, pass remaining options through
 
-python -m models.generate --checkpoint "$CHECKPOINT" "$@"
+python -m scripts.python.generate --checkpoint "$CHECKPOINT" "$@"

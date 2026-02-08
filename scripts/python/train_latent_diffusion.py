@@ -12,7 +12,7 @@ Pipeline:
     5. Loss = MSE(epsilon, epsilon_theta)
 
 Usage:
-    python -m models.train_latent_diffusion --vae_checkpoint path/to/vae.pt --epochs 100
+    python -m scripts.python.train_latent_diffusion --vae_checkpoint path/to/vae.pt --epochs 100
 """
 import argparse
 import time

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Train Latent Diffusion Model with GPU monitoring
 # Run from the root of the repository
-# Usage: bash scripts/train-latent-diffusion.sh <vae_checkpoint> [OPTIONS]
+# Usage: bash scripts/sh/train-latent-diffusion.sh <vae_checkpoint> [OPTIONS]
 #
 # Required:
 #   <vae_checkpoint>        Path to pre-trained VAE checkpoint (.pt file)
@@ -25,7 +25,7 @@ set -e
 
 if [ -z "$1" ]; then
     echo "Error: VAE checkpoint path is required"
-    echo "Usage: bash scripts/train-latent-diffusion.sh <vae_checkpoint> [OPTIONS]"
+    echo "Usage: bash scripts/sh/train-latent-diffusion.sh <vae_checkpoint> [OPTIONS]"
     exit 1
 fi
 
@@ -101,7 +101,7 @@ screen -dmS $SESSION_MONITOR bash -c "watch -n 1 nvidia-smi"
 # Start training session
 echo "Starting training in screen session: $SESSION_TRAIN"
 screen -dmS $SESSION_TRAIN bash -c "
-    python -m models.train_latent_diffusion \
+    python -m scripts.python.train_latent_diffusion \
         --vae_checkpoint $VAE_CHECKPOINT \
         --epochs $EPOCHS \
         --lr $LEARNING_RATE \

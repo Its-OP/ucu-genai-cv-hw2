@@ -5,7 +5,7 @@ Trains a Variational Autoencoder to compress padded 1x32x32 MNIST images
 into a 2x4x4 latent space, regularized by KL divergence against N(0, I).
 
 Usage:
-    python -m models.train_vae --epochs 100 --lr 1e-4
+    python -m scripts.python.train_vae --epochs 100 --lr 1e-4
 """
 import argparse
 import copy

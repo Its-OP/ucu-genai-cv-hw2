@@ -1,7 +1,7 @@
 #!/bin/bash
 # Pull latest changes from repository
 # Run from the root of the repository
-# Usage: bash scripts/pull.sh
+# Usage: bash scripts/sh/pull.sh
 
 set -e
 

@@ -2,7 +2,7 @@
 DDPM Training Script for MNIST.
 
 Usage:
-    python -m models.train --epochs 100 --lr 1e-3
+    python -m scripts.python.train --epochs 100 --lr 1e-3
 """
 import argparse
 import copy

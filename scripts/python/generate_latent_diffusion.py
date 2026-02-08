@@ -16,10 +16,10 @@ step visualization, and dedicated subfolders. Output directories are
 timestamped to avoid overwriting previous runs.
 
 Usage:
-    python -m models.generate_latent_diffusion \\
+    python -m scripts.python.generate_latent_diffusion \\
         --vae_checkpoint path/to/vae.pt \\
         --unet_checkpoint path/to/unet.pt
-    python -m models.generate_latent_diffusion \\
+    python -m scripts.python.generate_latent_diffusion \\
         --vae_checkpoint path/to/vae.pt \\
         --unet_checkpoint path/to/unet.pt \\
         --mode ddim --ddim_steps 50

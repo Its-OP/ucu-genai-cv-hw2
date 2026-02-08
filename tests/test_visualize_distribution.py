@@ -12,7 +12,7 @@ import torch.nn as nn
 
 from models.ddpm import DDPM
 from models.ddim import DDIMSampler
-from models.visualize_distribution import (
+from scripts.python.visualize_distribution import (
     flatten_images_to_pixels,
     generate_samples_batched,
 )

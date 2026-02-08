@@ -1,31 +1,33 @@
 #!/bin/bash
-# Train DDPM model with GPU monitoring
+# Train VAE model with GPU monitoring
 # Run from the root of the repository
-# Usage: bash scripts/train.sh [OPTIONS]
+# Usage: bash scripts/sh/train-vae.sh [OPTIONS]
 #
 # Options:
-#   --epochs N          Number of epochs (default: 100)
-#   --lr RATE           Learning rate (default: 1e-3)
-#   --batch_size N      Batch size (default: 512, use 1024+ for powerful GPUs)
-#   --timesteps N       Diffusion timesteps (default: 1000)
-#   --sample_every N    Generate samples every N epochs (default: 10)
-#   --base_channels N   Base channel count (default: 32, use 64 for higher capacity)
+#   --epochs N              Number of epochs (default: 100)
+#   --lr RATE               Learning rate (default: 1e-4)
+#   --batch_size N          Batch size (default: 512)
+#   --kl_weight FLOAT       KL divergence weight (default: 1e-6)
+#   --base_channels N       Base channel count (default: 64)
+#   --latent_channels N     Latent space channels (default: 2)
+#   --sample_every N        Generate reconstructions every N epochs (default: 10)
 #
-# Note: base_channels=32 → ~3M params (channel multipliers: 1, 2, 4, 4)
+# Note: base_channels=64, channel_multipliers=(1,2,4) → compresses 1x32x32 to 2x4x4
 #
 # This script launches two screen sessions:
-#   - ddpm-train: runs the training
-#   - ddpm-monitor: runs nvidia-smi for GPU monitoring
+#   - vae-train: runs the training
+#   - vae-monitor: runs nvidia-smi for GPU monitoring
 
 set -e
 
-# Default configuration (optimized for powerful GPUs like 5090)
-EPOCHS=100
-LEARNING_RATE="1e-3"
+# Default configuration
+EPOCHS=20
+LEARNING_RATE="1e-4"
 BATCH_SIZE=512
-TIMESTEPS=1000
-SAMPLE_EVERY=10
-BASE_CHANNELS=32
+KL_WEIGHT="1e-6"
+BASE_CHANNELS=64
+LATENT_CHANNELS=2
+SAMPLE_EVERY=4
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -42,16 +44,20 @@ while [[ $# -gt 0 ]]; do
             BATCH_SIZE="$2"
             shift 2
             ;;
-        --timesteps)
-            TIMESTEPS="$2"
-            shift 2
-            ;;
-        --sample_every)
-            SAMPLE_EVERY="$2"
+        --kl_weight)
+            KL_WEIGHT="$2"
             shift 2
             ;;
         --base_channels)
             BASE_CHANNELS="$2"
+            shift 2
+            ;;
+        --latent_channels)
+            LATENT_CHANNELS="$2"
+            shift 2
+            ;;
+        --sample_every)
+            SAMPLE_EVERY="$2"
             shift 2
             ;;
         *)
@@ -61,20 +67,20 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-SESSION_TRAIN="ddpm-train"
-SESSION_MONITOR="ddpm-monitor"
+SESSION_TRAIN="vae-train"
+SESSION_MONITOR="vae-monitor"
 
 echo "=========================================="
-echo "DDPM Training on MNIST"
+echo "VAE Training on MNIST"
 echo "=========================================="
 echo "Epochs: $EPOCHS"
 echo "Learning Rate: $LEARNING_RATE"
 echo "Batch Size: $BATCH_SIZE"
-echo "Timesteps: $TIMESTEPS"
-echo "Beta Schedule: cosine (hardcoded)"
-echo "Sample Every: $SAMPLE_EVERY epochs"
+echo "KL Weight: $KL_WEIGHT"
 echo "Base Channels: $BASE_CHANNELS"
-echo "Model: ~3M parameters (base_channels=32)"
+echo "Latent Channels: $LATENT_CHANNELS"
+echo "Sample Every: $SAMPLE_EVERY epochs"
+echo "Target: 1x32x32 -> ${LATENT_CHANNELS}x4x4"
 echo "=========================================="
 
 # Kill existing sessions if they exist
@@ -88,13 +94,14 @@ screen -dmS $SESSION_MONITOR bash -c "watch -n 1 nvidia-smi"
 # Start training session
 echo "Starting training in screen session: $SESSION_TRAIN"
 screen -dmS $SESSION_TRAIN bash -c "
-    python -m models.train \
+    python -m scripts.python.train_vae \
         --epochs $EPOCHS \
         --lr $LEARNING_RATE \
         --batch_size $BATCH_SIZE \
-        --timesteps $TIMESTEPS \
-        --sample_every $SAMPLE_EVERY \
-        --base_channels $BASE_CHANNELS
+        --kl_weight $KL_WEIGHT \
+        --base_channels $BASE_CHANNELS \
+        --latent_channels $LATENT_CHANNELS \
+        --sample_every $SAMPLE_EVERY
     echo ''
     echo 'Training complete! Press any key to exit.'
     read -n 1
