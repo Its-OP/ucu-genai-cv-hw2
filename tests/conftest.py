@@ -49,3 +49,15 @@ def feature_map_medium(device, seed):
 def time_embedding(device, seed):
     """Time embedding vector: (4, 128)."""
     return torch.randn(4, 128, device=device)
+
+
+@pytest.fixture
+def sample_image_padded(device, seed):
+    """Padded MNIST-like image batch: (4, 1, 32, 32)."""
+    return torch.randn(4, 1, 32, 32, device=device)
+
+
+@pytest.fixture
+def sample_latent(device, seed):
+    """Latent space sample: (4, 2, 4, 4)."""
+    return torch.randn(4, 2, 4, 4, device=device)
