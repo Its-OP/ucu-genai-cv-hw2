@@ -832,7 +832,7 @@ class UNet(nn.Module):
         # The final DownBlock never downsamples, so:
         #   number_of_downsamples = len(channel_multipliers) - 1
         # For pixel-space DDPM (1,2,3,3): 2^3 = 8  (28x28 padded to 32x32)
-        # For latent-space LDM  (1,2):    2^1 = 4  (4x4 needs no padding)
+        # For latent-space LDM  (1,):     2^0 = 1  (4x4 needs no padding)
         number_of_downsamples = len(channel_multipliers) - 1
         self.spatial_multiple = 2 ** number_of_downsamples
 
