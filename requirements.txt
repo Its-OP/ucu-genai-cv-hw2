@@ -2,9 +2,6 @@
 torch~=2.10.0
 torchvision~=0.25.0
 
-# Diffusion model
-diffusers>=0.31.0
-
 # Visualization
 matplotlib~=3.10.8
 umap-learn~=0.5.7

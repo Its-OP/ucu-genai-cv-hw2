@@ -5,3 +5,6 @@ __pycache__
 experiments
 .DS_store
 experiments/*
+generated_samples/*
+distribution_plots/*
+figures/*

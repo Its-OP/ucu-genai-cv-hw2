@@ -7,9 +7,8 @@ All tests follow the AAA pattern (Arrange, Act, Assert).
 """
 import pytest
 import torch
-from diffusers import UNet2DModel
 
-from models.unet import UNet
+from models.unet import UNet, UNet2DModel
 
 
 class TestUNetOutputShape:
