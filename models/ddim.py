@@ -112,6 +112,7 @@ class DDIMSampler(nn.Module):
         x_current: torch.Tensor,
         timestep_current: int,
         timestep_previous: int,
+        clip_denoised: bool = True,
     ) -> torch.Tensor:
         """
         Single DDIM reverse step: from x_{τ_i} to x_{τ_{i-1}}.
@@ -119,7 +120,8 @@ class DDIMSampler(nn.Module):
         Algorithm (Song et al. 2020, Eq. 12):
             1. Predict noise: ε_θ(x_{τ_i}, τ_i)
             2. Reconstruct x̂₀ = (x_{τ_i} - √(1 - ᾱ_{τ_i}) · ε_θ) / √ᾱ_{τ_i}
-            3. Clip x̂₀ to [-1, 1] for numerical stability
+            3. Optionally clip x̂₀ to [-1, 1] for numerical stability
+               (appropriate for pixel space; disable for latent diffusion)
             4. Compute σ using η parameter
             5. Compute direction pointing to x_t:
                  direction = √(1 - ᾱ_{τ_{i-1}} - σ²) · ε_θ
@@ -132,6 +134,9 @@ class DDIMSampler(nn.Module):
             timestep_current: Current timestep index τ_i.
             timestep_previous: Target timestep index τ_{i-1}.
                               Use -1 as sentinel for the final step to the clean image.
+            clip_denoised: If True, clip predicted x̂₀ to [-1, 1]. Set to True for
+                pixel-space diffusion, False for latent-space diffusion where
+                latent values are not bounded to [-1, 1].
 
         Returns:
             Denoised sample x_{τ_{i-1}}, same shape as x_current.
@@ -164,8 +169,10 @@ class DDIMSampler(nn.Module):
             x_current - torch.sqrt(1.0 - alpha_cumprod_current) * predicted_noise
         ) / torch.sqrt(alpha_cumprod_current)
 
-        # Step 3: Clip x̂₀ to [-1, 1] for numerical stability
-        predicted_original_sample = predicted_original_sample.clamp(-1.0, 1.0)
+        # Step 3: Clip x̂₀ to [-1, 1] for numerical stability in pixel space.
+        # Disabled for latent-space diffusion where latents are unbounded.
+        if clip_denoised:
+            predicted_original_sample = predicted_original_sample.clamp(-1.0, 1.0)
 
         # Step 4: Compute σ using η parameter
         # σ = η · √((1 - ᾱ_{τ_{i-1}}) / (1 - ᾱ_{τ_i})) · √(1 - ᾱ_{τ_i} / ᾱ_{τ_{i-1}})
@@ -196,6 +203,7 @@ class DDIMSampler(nn.Module):
         shape: tuple,
         return_intermediates: bool = False,
         intermediate_steps: list = None,
+        clip_denoised: bool = True,
     ) -> torch.Tensor:
         """
         Full DDIM reverse diffusion: generate images from pure noise.
@@ -214,6 +222,8 @@ class DDIMSampler(nn.Module):
             return_intermediates: If True, also return intermediate samples.
             intermediate_steps: Timestep indices at which to save intermediates.
                                Defaults to evenly-spaced steps through the DDIM sequence.
+            clip_denoised: If True, clip predicted x̂₀ to [-1, 1] at each reverse step.
+                Set to False for latent-space diffusion.
 
         Returns:
             Generated samples tensor of the requested shape.
@@ -255,7 +265,10 @@ class DDIMSampler(nn.Module):
             else:
                 timestep_previous = -1  # Sentinel: stepping to clean image
 
-            image = self.ddim_sample(model, image, timestep_current, timestep_previous)
+            image = self.ddim_sample(
+                model, image, timestep_current, timestep_previous,
+                clip_denoised=clip_denoised,
+            )
 
             if return_intermediates and timestep_current in intermediate_steps:
                 intermediates.append((timestep_current, image.clone()))

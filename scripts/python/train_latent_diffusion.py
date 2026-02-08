@@ -92,42 +92,93 @@ def parse_args():
 
 
 @torch.no_grad()
-def encode_batch(vae: VAE, images: torch.Tensor) -> torch.Tensor:
+def encode_batch(
+    vae: VAE, images: torch.Tensor, scaling_factor: float = 1.0,
+) -> torch.Tensor:
     """
-    Encode a batch of images to latent space using the frozen VAE.
+    Encode a batch of images to scaled latent space using the frozen VAE.
 
-    Uses reparameterized sampling from the posterior q(z|x):
-        z = mean + std * epsilon, where epsilon ~ N(0, I)
+    Uses the deterministic posterior mode (mean) rather than stochastic sampling
+    to avoid injecting VAE reparameterization noise on top of diffusion noise.
+    This is standard practice for latent diffusion training (Rombach et al. 2022).
+
+    The latents are scaled by ``scaling_factor`` (= 1/std(z)) so that the
+    diffusion noise schedule — which assumes unit-variance data — is properly
+    calibrated (Rombach et al. 2022, Section 3.3).
 
     Args:
         vae: Frozen VAE encoder.
         images: Input images, shape (B, 1, 32, 32).
+        scaling_factor: Latent scaling factor (1 / std of unscaled latents).
 
     Returns:
-        Latent samples, shape (B, latent_channels, 4, 4).
+        Scaled latent codes, shape (B, latent_channels, 4, 4).
     """
     posterior = vae.encode(images)
-    return posterior.sample()
+    # z = posterior mean (deterministic — no reparameterization noise)
+    latent = posterior.mode()
+    # Scale so that Var(z_scaled) ≈ 1, matching the noise schedule assumption
+    return latent * scaling_factor
+
+
+@torch.no_grad()
+def compute_latent_scaling_factor(
+    vae: VAE, data_loader, device: torch.device, num_batches: int = 50,
+) -> float:
+    """
+    Compute the latent scaling factor from training data.
+
+    The diffusion noise schedule (cosine or linear) assumes that the training
+    data has approximately unit variance. VAE latents may have a very different
+    variance, causing the noise schedule to be miscalibrated. This function
+    computes ``scaling_factor = 1 / std(z)`` across a subset of encoded
+    training images so that ``z_scaled = z * scaling_factor`` has unit variance.
+
+    Reference: Rombach et al. 2022, Section 3.3 ("Latent Diffusion Models").
+
+    Args:
+        vae: Frozen VAE encoder.
+        data_loader: Training data loader.
+        device: Torch device.
+        num_batches: Number of batches to use for estimation (default: 50).
+
+    Returns:
+        Scalar scaling factor (float).
+    """
+    all_latents = []
+    for batch_index, (images, _) in enumerate(data_loader):
+        if batch_index >= num_batches:
+            break
+        images = pad_to_32(images.to(device))
+        posterior = vae.encode(images)
+        all_latents.append(posterior.mode())
+
+    # Concatenate all latent samples: shape (N, C, H, W)
+    latents = torch.cat(all_latents, dim=0)
+    # scaling_factor = 1 / std(z) so that z_scaled = z * scaling_factor has Var ≈ 1
+    scaling_factor = 1.0 / latents.flatten().std().item()
+    return scaling_factor
 
 
 def train_epoch(
-    unet, ddpm, vae, optimizer, loader, device, scaler=None, ema=None
+    unet, ddpm, vae, optimizer, loader, device,
+    scaling_factor=1.0, scaler=None, ema=None,
 ):
     """Train the latent-space UNet for one epoch.
 
     The diffusion training loss in latent space is:
         L = E_{t, z_0, epsilon}[|| epsilon - epsilon_theta(z_t, t) ||^2]
 
-    where z_0 = Enc(x) is the VAE-encoded input.
+    where z_0 = scaling_factor · Enc(x) is the scaled VAE-encoded input.
     """
     unet.train()
     total_loss = 0.0
     use_amp = scaler is not None
 
     for images, _ in tqdm(loader, desc="Training", leave=False):
-        # Pad images 28x28 -> 32x32, then encode to latent space
+        # Pad images 28x28 -> 32x32, then encode to scaled latent space
         images = pad_to_32(images.to(device))
-        latent = encode_batch(vae, images)
+        latent = encode_batch(vae, images, scaling_factor=scaling_factor)
 
         # Sample random timesteps
         timestep = torch.randint(0, ddpm.timesteps, (latent.shape[0],), device=device)
@@ -157,14 +208,14 @@ def train_epoch(
 
 
 @torch.no_grad()
-def evaluate(unet, ddpm, vae, loader, device, use_amp=False):
+def evaluate(unet, ddpm, vae, loader, device, scaling_factor=1.0, use_amp=False):
     """Evaluate latent diffusion model on test set."""
     unet.eval()
     total_loss = 0.0
 
     for images, _ in loader:
         images = pad_to_32(images.to(device))
-        latent = encode_batch(vae, images)
+        latent = encode_batch(vae, images, scaling_factor=scaling_factor)
 
         timestep = torch.randint(0, ddpm.timesteps, (latent.shape[0],), device=device)
 
@@ -180,15 +231,18 @@ def evaluate(unet, ddpm, vae, loader, device, use_amp=False):
 
 
 @torch.no_grad()
-def generate_samples(unet, ddpm, vae, num_samples, latent_channels, device):
+def generate_samples(
+    unet, ddpm, vae, num_samples, latent_channels, device, scaling_factor=1.0,
+):
     """
     Generate pixel-space samples via the latent diffusion pipeline.
 
     Pipeline:
         1. Sample noise in latent space: z_T ~ N(0, I), shape (B, latent_channels, 4, 4)
-        2. Denoise via DDPM reverse process: z_T -> z_0
-        3. Decode latent to pixel space: x_hat = Dec(z_0), shape (B, 1, 32, 32)
-        4. Crop back to 28x28: remove the 2-pixel reflect padding
+        2. Denoise via DDPM reverse process (no x₀ clipping): z_T -> z_0_scaled
+        3. Unscale latents: z_0 = z_0_scaled / scaling_factor
+        4. Decode latent to pixel space: x_hat = Dec(z_0), shape (B, 1, 32, 32)
+        5. Crop back to 28x28: remove the 2-pixel reflect padding
 
     Args:
         unet: Trained latent-space UNet.
@@ -197,14 +251,19 @@ def generate_samples(unet, ddpm, vae, num_samples, latent_channels, device):
         num_samples: Number of samples to generate.
         latent_channels: Number of latent channels.
         device: Torch device.
+        scaling_factor: Latent scaling factor used during training (1 / std(z)).
 
     Returns:
         Generated images, shape (num_samples, 1, 28, 28), in [-1, 1].
     """
     # Generate in latent space: (num_samples, latent_channels, 4, 4)
-    # The UNet wrapper pads 4x4 -> 8x8 internally, so this works with channel_multipliers=(1,2)
+    # clip_denoised=False because latent values are not bounded to [-1, 1]
     latent_shape = (num_samples, latent_channels, 4, 4)
-    latent_samples = ddpm.p_sample_loop(unet, latent_shape)
+    latent_samples = ddpm.p_sample_loop(unet, latent_shape, clip_denoised=False)
+
+    # Unscale latents back to the original VAE latent range before decoding
+    # z_0 = z_0_scaled / scaling_factor
+    latent_samples = latent_samples / scaling_factor
 
     # Decode to pixel space: (num_samples, 1, 32, 32)
     pixel_samples = vae.decode(latent_samples)
@@ -236,6 +295,13 @@ def main():
     test_loader = get_test_loader(args.batch_size)
     print(f"Batch size: {train_loader.batch_size}")
 
+    # Compute latent scaling factor: 1 / std(z) across a subset of training images
+    # This normalizes latent variance to ~1.0, matching the noise schedule assumption
+    # (Rombach et al. 2022, Section 3.3: "Latent Diffusion Models")
+    print("Computing latent scaling factor...")
+    scaling_factor = compute_latent_scaling_factor(vae, train_loader, device)
+    print(f"Latent scaling factor: {scaling_factor:.4f}")
+
     # Setup experiment folder
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     exp_dir = setup_experiment_folder(f"./experiments/{timestamp}-latent-diffusion")
@@ -261,6 +327,7 @@ def main():
         "vae_checkpoint": args.vae_checkpoint,
         "image_channels": latent_channels,  # UNet input = latent channels
         "latent_channels": latent_channels,
+        "latent_scaling_factor": scaling_factor,
     }
     log_config(exp_dir, config)
 
@@ -298,6 +365,7 @@ def main():
         "timesteps": args.timesteps,
         "vae_checkpoint": args.vae_checkpoint,
         "latent_channels": latent_channels,
+        "latent_scaling_factor": scaling_factor,
     }
 
     # Initialize EMA
@@ -317,12 +385,16 @@ def main():
         epoch_start = time.time()
 
         train_loss = train_epoch(
-            unet, ddpm, vae, optimizer, train_loader, device, scaler, ema
+            unet, ddpm, vae, optimizer, train_loader, device,
+            scaling_factor=scaling_factor, scaler=scaler, ema=ema,
         )
 
         # Use EMA weights for evaluation
         ema.apply_shadow(unet)
-        eval_loss = evaluate(unet, ddpm, vae, test_loader, device, use_amp)
+        eval_loss = evaluate(
+            unet, ddpm, vae, test_loader, device,
+            scaling_factor=scaling_factor, use_amp=use_amp,
+        )
         ema.restore(unet)
 
         train_losses.append(train_loss)
@@ -344,7 +416,10 @@ def main():
             unet.eval()
 
             # Generate samples through the full pipeline: noise -> latent -> pixel
-            samples = generate_samples(unet, ddpm, vae, 10, latent_channels, device)
+            samples = generate_samples(
+                unet, ddpm, vae, 10, latent_channels, device,
+                scaling_factor=scaling_factor,
+            )
             save_images(samples, f"{exp_dir}/epoch_samples/epoch_{epoch + 1:03d}.png")
 
             # Save checkpoint with EMA weights
@@ -379,7 +454,10 @@ def main():
 
     # Generate final samples
     inference_start = time.time()
-    final_samples = generate_samples(unet, ddpm, vae, 10, latent_channels, device)
+    final_samples = generate_samples(
+        unet, ddpm, vae, 10, latent_channels, device,
+        scaling_factor=scaling_factor,
+    )
     inference_time = time.time() - inference_start
     save_images(final_samples, f"{exp_dir}/final_samples/final_grid.png")
 

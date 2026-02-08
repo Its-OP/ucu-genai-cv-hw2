@@ -109,26 +109,35 @@ def parse_args():
 
 
 @torch.no_grad()
-def decode_latent_to_pixel(vae, latent: torch.Tensor) -> torch.Tensor:
+def decode_latent_to_pixel(
+    vae, latent: torch.Tensor, scaling_factor: float = 1.0,
+) -> torch.Tensor:
     """
     Decode latent samples to 28x28 pixel images via the VAE decoder.
 
-    Pipeline: z -> VAE.decode(z) -> 32x32 -> crop to 28x28
+    Pipeline: z_scaled -> z = z_scaled / scaling_factor -> VAE.decode(z) -> 32x32 -> crop to 28x28
 
     Args:
         vae: Frozen VAE decoder.
-        latent: Latent tensor, shape (B, latent_channels, 4, 4).
+        latent: Scaled latent tensor, shape (B, latent_channels, 4, 4).
+        scaling_factor: Latent scaling factor used during training. The latents
+            are divided by this factor before decoding to reverse the scaling
+            applied during training (Rombach et al. 2022, Section 3.3).
 
     Returns:
         Pixel images, shape (B, 1, 28, 28), in [-1, 1].
     """
-    pixel_images = vae.decode(latent)
+    # Unscale latents: z = z_scaled / scaling_factor
+    unscaled_latent = latent / scaling_factor
+    pixel_images = vae.decode(unscaled_latent)
     # Crop from 32x32 back to 28x28 (remove 2-pixel padding on each side)
     pixel_images = pixel_images[:, :, 2:30, 2:30]
     return pixel_images
 
 
-def save_latent_denoising_steps(intermediates, vae, sample_directory):
+def save_latent_denoising_steps(
+    intermediates, vae, sample_directory, scaling_factor=1.0,
+):
     """Save each denoising step (decoded to pixel space) as an individual image.
 
     Unlike the pixel-space version in models.utils, this function first decodes
@@ -138,17 +147,20 @@ def save_latent_denoising_steps(intermediates, vae, sample_directory):
         intermediates: List of (timestep, latent_tensor) tuples from the sampling loop.
         vae: Frozen VAE for decoding latent -> pixel.
         sample_directory: Directory path where step images are saved.
+        scaling_factor: Latent scaling factor for unscaling before VAE decode.
     """
     for step_number, (timestep, latent_tensor) in enumerate(intermediates):
         # Decode latent intermediate to pixel space for visualization
-        pixel_tensor = decode_latent_to_pixel(vae, latent_tensor)
+        pixel_tensor = decode_latent_to_pixel(vae, latent_tensor, scaling_factor)
         step_path = os.path.join(
             sample_directory, f"step_{step_number:02d}_t{timestep:04d}.pdf"
         )
         save_single_image(pixel_tensor, step_path)
 
 
-def save_latent_denoising_progression(intermediates, vae, path):
+def save_latent_denoising_progression(
+    intermediates, vae, path, scaling_factor=1.0,
+):
     """Save a horizontal strip showing the denoising progression (decoded to pixels).
 
     Unlike the pixel-space version in models.utils, this function first decodes
@@ -158,6 +170,7 @@ def save_latent_denoising_progression(intermediates, vae, path):
         intermediates: List of (timestep, latent_tensor) tuples.
         vae: Frozen VAE for decoding.
         path: Output file path for the strip image.
+        scaling_factor: Latent scaling factor for unscaling before VAE decode.
     """
     num_steps = len(intermediates)
     fig, axes = plt.subplots(1, num_steps, figsize=(2.5 * num_steps, 2.5))
@@ -166,7 +179,7 @@ def save_latent_denoising_progression(intermediates, vae, path):
         axes = [axes]
 
     for index, (timestep, latent_tensor) in enumerate(intermediates):
-        pixel_tensor = decode_latent_to_pixel(vae, latent_tensor)
+        pixel_tensor = decode_latent_to_pixel(vae, latent_tensor, scaling_factor)
         image = (pixel_tensor[0, 0] + 1) / 2
         image = image.clamp(0, 1).cpu().numpy()
         axes[index].imshow(image, cmap="gray")
@@ -195,9 +208,13 @@ def main():
     vae = load_vae_checkpoint(args.vae_checkpoint, device)
     unet, ddpm, config = load_unet_checkpoint(args.unet_checkpoint, device)
 
-    # Determine latent shape from config
+    # Determine latent shape and scaling factor from config
     latent_channels = config.get("latent_channels", config["image_channels"])
     single_latent_shape = (1, latent_channels, 4, 4)
+
+    # Load latent scaling factor (defaults to 1.0 for older checkpoints without it)
+    scaling_factor = config.get("latent_scaling_factor", 1.0)
+    print(f"Latent scaling factor: {scaling_factor:.4f}")
 
     # Setup sampler and compute denoising intermediate steps
     if args.mode == "ddim":
@@ -235,12 +252,14 @@ def main():
         # Time the generation
         sample_start_time = time.time()
 
+        # clip_denoised=False because latent values are not bounded to [-1, 1]
         if args.mode == "ddim":
             latent_sample, intermediates = ddim_sampler.ddim_sample_loop(
                 unet,
                 single_latent_shape,
                 return_intermediates=True,
                 intermediate_steps=intermediate_steps,
+                clip_denoised=False,
             )
         else:
             latent_sample, intermediates = ddpm.p_sample_loop(
@@ -248,13 +267,14 @@ def main():
                 single_latent_shape,
                 return_intermediates=True,
                 intermediate_steps=intermediate_steps,
+                clip_denoised=False,
             )
 
         sample_elapsed_time = time.time() - sample_start_time
         per_sample_times.append(sample_elapsed_time)
 
-        # Decode final latent to pixel space
-        pixel_sample = decode_latent_to_pixel(vae, latent_sample)
+        # Decode final latent to pixel space (unscaling applied inside)
+        pixel_sample = decode_latent_to_pixel(vae, latent_sample, scaling_factor)
         all_samples.append(pixel_sample)
 
         # Save final generated image (pixel space, 28x28)
@@ -262,13 +282,17 @@ def main():
         save_single_image(pixel_sample, final_image_path)
 
         # Save each denoising step decoded to pixel space
-        save_latent_denoising_steps(intermediates, vae, sample_directory)
+        save_latent_denoising_steps(
+            intermediates, vae, sample_directory, scaling_factor,
+        )
 
         # Save denoising progression strip
         progression_path = os.path.join(
             sample_directory, "denoising_progression.pdf"
         )
-        save_latent_denoising_progression(intermediates, vae, progression_path)
+        save_latent_denoising_progression(
+            intermediates, vae, progression_path, scaling_factor,
+        )
 
         print(
             f"  Sample {sample_index:3d}: {sample_elapsed_time:.3f}s "
