@@ -124,6 +124,15 @@ def parse_args():
         help="DDIM stochasticity: 0.0=deterministic, 1.0=DDPM-like "
         "(only with --mode ddim)",
     )
+    parser.add_argument(
+        "--dynamic_thresholding_percentile",
+        type=float,
+        default=0.995,
+        help="Dynamic thresholding percentile for DDPM sampling in latent "
+        "space (Saharia et al. 2022). Prevents CFG-induced divergence over "
+        "1000 stochastic steps. Set to 0 to disable. Only used with "
+        "--mode ddpm (default: 0.995)",
+    )
     return parser.parse_args()
 
 
@@ -298,12 +307,16 @@ def main():
                     clip_denoised=False,
                 )
             else:
+                # DDPM in latent space with CFG needs dynamic thresholding
+                # (Saharia et al. 2022) to prevent accumulated drift from
+                # CFG-amplified x̂₀ predictions over 1000 stochastic steps
                 latent_sample, intermediates = ddpm.p_sample_loop(
                     cfg_wrapper,
                     single_latent_shape,
                     return_intermediates=True,
                     intermediate_steps=intermediate_steps,
                     clip_denoised=False,
+                    dynamic_thresholding_percentile=args.dynamic_thresholding_percentile,
                 )
 
             sample_elapsed_time = time.time() - sample_start_time
