@@ -305,6 +305,120 @@ class SelfAttentionBlock(nn.Module):
         return attention_output + residual
 
 
+class CrossAttentionBlock(nn.Module):
+    """
+    Multi-head cross-attention block with GroupNorm and residual connection.
+
+    Queries are derived from UNet feature maps while keys and values come
+    from external conditioning context (e.g., class embeddings, text tokens).
+
+    Architecture:
+        GroupNorm -> reshape (B,C,H,W) to (B,H*W,C)
+        -> Q projection from features
+        -> K, V projections from context (B, S, context_dim)
+        -> scaled dot-product attention: softmax(QK^T / sqrt(d_k)) V
+        -> output linear projection
+        -> reshape back to (B,C,H,W) -> + residual
+
+    Cross-attention formula (Vaswani et al. 2017):
+        Attention(Q, K, V) = softmax(Q K^T / sqrt(d_k)) V
+        where Q = W_q · features, K = W_k · context, V = W_v · context
+
+    Uses PyTorch's F.scaled_dot_product_attention for optimal performance.
+
+    Args:
+        channels: Number of input/output feature map channels (query dimension).
+        context_dim: Dimension of the external context vectors.
+        norm_num_groups: Number of groups for GroupNorm.
+        norm_epsilon: Epsilon for GroupNorm.
+        attention_head_dimension: Dimension per attention head (default: 1).
+    """
+
+    def __init__(
+        self,
+        channels: int,
+        context_dim: int,
+        norm_num_groups: int = 32,
+        norm_epsilon: float = 1e-5,
+        attention_head_dimension: int = 1,
+    ):
+        super().__init__()
+        self.channels = channels
+        self.number_of_heads = channels // attention_head_dimension
+        self.head_dimension = attention_head_dimension
+
+        self.group_norm = nn.GroupNorm(norm_num_groups, channels, eps=norm_epsilon)
+
+        # Q projection from UNet features (channels -> channels)
+        self.query_projection = nn.Linear(channels, channels)
+        # K, V projections from external context (context_dim -> channels)
+        self.key_projection = nn.Linear(context_dim, channels)
+        self.value_projection = nn.Linear(context_dim, channels)
+
+        # Output projection
+        self.output_projection = nn.Linear(channels, channels)
+
+    def forward(
+        self, hidden_states: torch.Tensor, context: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Args:
+            hidden_states: Feature map, shape (batch, channels, height, width).
+            context: External conditioning context, shape (batch, sequence_length, context_dim).
+
+        Returns:
+            Attended feature map, shape (batch, channels, height, width).
+        """
+        residual = hidden_states
+        batch_size, channels, height, width = hidden_states.shape
+        sequence_length = height * width
+
+        # GroupNorm then reshape to sequence: (B, C, H, W) -> (B, H*W, C)
+        hidden_states = self.group_norm(hidden_states)
+        hidden_states = hidden_states.reshape(batch_size, channels, sequence_length)
+        hidden_states = hidden_states.permute(0, 2, 1)
+
+        # Q from UNet features: (B, H*W, C)
+        query = self.query_projection(hidden_states)
+
+        # K, V from external context: (B, S, context_dim) -> (B, S, C)
+        context_sequence_length = context.shape[1]
+        key = self.key_projection(context)
+        value = self.value_projection(context)
+
+        # Reshape for multi-head attention:
+        # Q: (B, H*W, C) -> (B, num_heads, H*W, head_dim)
+        query = query.reshape(
+            batch_size, sequence_length, self.number_of_heads, self.head_dimension
+        ).permute(0, 2, 1, 3)
+        # K, V: (B, S, C) -> (B, num_heads, S, head_dim)
+        key = key.reshape(
+            batch_size, context_sequence_length, self.number_of_heads, self.head_dimension
+        ).permute(0, 2, 1, 3)
+        value = value.reshape(
+            batch_size, context_sequence_length, self.number_of_heads, self.head_dimension
+        ).permute(0, 2, 1, 3)
+
+        # Scaled dot-product cross-attention:
+        #   Attention(Q, K, V) = softmax(Q K^T / sqrt(d_k)) V
+        attention_output = F.scaled_dot_product_attention(query, key, value)
+
+        # Reshape back: (B, num_heads, H*W, head_dim) -> (B, H*W, C)
+        attention_output = attention_output.permute(0, 2, 1, 3).reshape(
+            batch_size, sequence_length, channels
+        )
+
+        # Output projection
+        attention_output = self.output_projection(attention_output)
+
+        # Reshape to spatial: (B, H*W, C) -> (B, C, H, W)
+        attention_output = attention_output.permute(0, 2, 1).reshape(
+            batch_size, channels, height, width
+        )
+
+        return attention_output + residual
+
+
 class Downsample2D(nn.Module):
     """
     Spatial downsampling by factor 2 using strided convolution.
@@ -347,10 +461,12 @@ class Upsample2D(nn.Module):
 
 class DownBlock(nn.Module):
     """
-    Encoder block: ResidualBlocks with optional self-attention and downsampling.
+    Encoder block: ResidualBlocks with optional self-attention, optional
+    cross-attention, and downsampling.
 
-    Each block contains `num_layers` ResidualBlocks (each optionally followed by
-    a SelfAttentionBlock), then an optional Downsample2D at the end.
+    Each block contains `num_layers` ResidualBlocks, each optionally followed by
+    a SelfAttentionBlock and then optionally a CrossAttentionBlock (when
+    cross_attention_dim is set). Then an optional Downsample2D at the end.
 
     Skip connections are collected from each ResidualBlock output (after attention)
     and from the Downsample output (if present).
@@ -365,6 +481,8 @@ class DownBlock(nn.Module):
         norm_num_groups: Number of groups for GroupNorm.
         norm_epsilon: Epsilon for GroupNorm.
         attention_head_dimension: Dimension per attention head.
+        cross_attention_dim: Dimension of external context for cross-attention.
+            If None, no cross-attention blocks are created (default behavior).
     """
 
     def __init__(
@@ -378,10 +496,12 @@ class DownBlock(nn.Module):
         norm_num_groups: int = 32,
         norm_epsilon: float = 1e-5,
         attention_head_dimension: int = 1,
+        cross_attention_dim: int = None,
     ):
         super().__init__()
         self.residual_blocks = nn.ModuleList()
         self.attention_blocks = nn.ModuleList()
+        self.cross_attention_blocks = nn.ModuleList()
 
         for layer_index in range(num_layers):
             resnet_input_channels = (
@@ -405,16 +525,33 @@ class DownBlock(nn.Module):
                         attention_head_dimension=attention_head_dimension,
                     )
                 )
+                # Cross-attention follows self-attention when context is provided
+                if cross_attention_dim is not None:
+                    self.cross_attention_blocks.append(
+                        CrossAttentionBlock(
+                            channels=output_channels,
+                            context_dim=cross_attention_dim,
+                            norm_num_groups=norm_num_groups,
+                            norm_epsilon=norm_epsilon,
+                            attention_head_dimension=attention_head_dimension,
+                        )
+                    )
 
         self.downsampler = Downsample2D(output_channels) if add_downsample else None
 
     def forward(
-        self, hidden_states: torch.Tensor, time_embedding: torch.Tensor
+        self,
+        hidden_states: torch.Tensor,
+        time_embedding: torch.Tensor,
+        context: torch.Tensor = None,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...]]:
         """
         Args:
             hidden_states: Feature map from previous block.
             time_embedding: Timestep conditioning vector.
+            context: Optional external conditioning context for cross-attention,
+                shape (batch, sequence_length, context_dim). Ignored when no
+                cross-attention blocks exist.
 
         Returns:
             Tuple of (output_hidden_states, skip_connections) where
@@ -426,6 +563,10 @@ class DownBlock(nn.Module):
             hidden_states = residual_block(hidden_states, time_embedding)
             if self.attention_blocks:
                 hidden_states = self.attention_blocks[layer_index](hidden_states)
+                if self.cross_attention_blocks and context is not None:
+                    hidden_states = self.cross_attention_blocks[layer_index](
+                        hidden_states, context,
+                    )
             skip_connections = skip_connections + (hidden_states,)
 
         if self.downsampler is not None:
@@ -438,11 +579,12 @@ class DownBlock(nn.Module):
 class UpBlock(nn.Module):
     """
     Decoder block: ResidualBlocks with skip concatenation, optional self-attention,
-    and optional upsampling.
+    optional cross-attention, and optional upsampling.
 
     Each block contains `num_layers` ResidualBlocks. Before each ResidualBlock, the
     current feature map is concatenated with a popped skip connection (from the
-    encoder). Optionally, each ResidualBlock is followed by a SelfAttentionBlock.
+    encoder). Optionally, each ResidualBlock is followed by a SelfAttentionBlock
+    and then a CrossAttentionBlock (when cross_attention_dim is set).
     At the end, an optional Upsample2D doubles the spatial resolution.
 
     The number of layers is typically `layers_per_block + 1` to account for the
@@ -459,6 +601,8 @@ class UpBlock(nn.Module):
         norm_num_groups: Number of groups for GroupNorm.
         norm_epsilon: Epsilon for GroupNorm.
         attention_head_dimension: Dimension per attention head.
+        cross_attention_dim: Dimension of external context for cross-attention.
+            If None, no cross-attention blocks are created (default behavior).
     """
 
     def __init__(
@@ -473,10 +617,12 @@ class UpBlock(nn.Module):
         norm_num_groups: int = 32,
         norm_epsilon: float = 1e-5,
         attention_head_dimension: int = 1,
+        cross_attention_dim: int = None,
     ):
         super().__init__()
         self.residual_blocks = nn.ModuleList()
         self.attention_blocks = nn.ModuleList()
+        self.cross_attention_blocks = nn.ModuleList()
 
         for layer_index in range(num_layers):
             # Determine skip connection channel count for this layer:
@@ -516,6 +662,17 @@ class UpBlock(nn.Module):
                         attention_head_dimension=attention_head_dimension,
                     )
                 )
+                # Cross-attention follows self-attention when context is provided
+                if cross_attention_dim is not None:
+                    self.cross_attention_blocks.append(
+                        CrossAttentionBlock(
+                            channels=output_channels,
+                            context_dim=cross_attention_dim,
+                            norm_num_groups=norm_num_groups,
+                            norm_epsilon=norm_epsilon,
+                            attention_head_dimension=attention_head_dimension,
+                        )
+                    )
 
         self.upsampler = Upsample2D(output_channels) if add_upsample else None
 
@@ -524,6 +681,7 @@ class UpBlock(nn.Module):
         hidden_states: torch.Tensor,
         skip_connections: tuple[torch.Tensor, ...],
         time_embedding: torch.Tensor,
+        context: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -531,6 +689,9 @@ class UpBlock(nn.Module):
             skip_connections: Tuple of skip connection tensors from the encoder.
                              Consumed from the end (last element first).
             time_embedding: Timestep conditioning vector.
+            context: Optional external conditioning context for cross-attention,
+                shape (batch, sequence_length, context_dim). Ignored when no
+                cross-attention blocks exist.
 
         Returns:
             Output feature map after processing and optional upsampling.
@@ -545,6 +706,10 @@ class UpBlock(nn.Module):
 
             if self.attention_blocks:
                 hidden_states = self.attention_blocks[layer_index](hidden_states)
+                if self.cross_attention_blocks and context is not None:
+                    hidden_states = self.cross_attention_blocks[layer_index](
+                        hidden_states, context,
+                    )
 
         if self.upsampler is not None:
             hidden_states = self.upsampler(hidden_states)
@@ -554,10 +719,11 @@ class UpBlock(nn.Module):
 
 class UNetMidBlock(nn.Module):
     """
-    UNet bottleneck block: ResidualBlock -> SelfAttention -> ResidualBlock.
+    UNet bottleneck block: ResidualBlock -> SelfAttention -> [CrossAttention] -> ResidualBlock.
 
     Operates at the lowest spatial resolution of the UNet without changing
-    the spatial dimensions or channel count.
+    the spatial dimensions or channel count. Optionally includes a
+    CrossAttentionBlock between self-attention and the second residual block.
 
     Args:
         channels: Number of channels at the bottleneck.
@@ -565,6 +731,8 @@ class UNetMidBlock(nn.Module):
         norm_num_groups: Number of groups for GroupNorm.
         norm_epsilon: Epsilon for GroupNorm.
         attention_head_dimension: Dimension per attention head.
+        cross_attention_dim: Dimension of external context for cross-attention.
+            If None, no cross-attention block is created (default behavior).
     """
 
     def __init__(
@@ -574,6 +742,7 @@ class UNetMidBlock(nn.Module):
         norm_num_groups: int = 32,
         norm_epsilon: float = 1e-5,
         attention_head_dimension: int = 1,
+        cross_attention_dim: int = None,
     ):
         super().__init__()
         self.residual_block_1 = ResidualBlock(
@@ -589,6 +758,17 @@ class UNetMidBlock(nn.Module):
             norm_epsilon=norm_epsilon,
             attention_head_dimension=attention_head_dimension,
         )
+        self.cross_attention_block = (
+            CrossAttentionBlock(
+                channels=channels,
+                context_dim=cross_attention_dim,
+                norm_num_groups=norm_num_groups,
+                norm_epsilon=norm_epsilon,
+                attention_head_dimension=attention_head_dimension,
+            )
+            if cross_attention_dim is not None
+            else None
+        )
         self.residual_block_2 = ResidualBlock(
             input_channels=channels,
             output_channels=channels,
@@ -598,18 +778,26 @@ class UNetMidBlock(nn.Module):
         )
 
     def forward(
-        self, hidden_states: torch.Tensor, time_embedding: torch.Tensor
+        self,
+        hidden_states: torch.Tensor,
+        time_embedding: torch.Tensor,
+        context: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Args:
             hidden_states: Bottleneck feature map.
             time_embedding: Timestep conditioning vector.
+            context: Optional external conditioning context for cross-attention,
+                shape (batch, sequence_length, context_dim). Ignored when no
+                cross-attention block exists.
 
         Returns:
             Processed bottleneck feature map (same shape).
         """
         hidden_states = self.residual_block_1(hidden_states, time_embedding)
         hidden_states = self.attention_block(hidden_states)
+        if self.cross_attention_block is not None and context is not None:
+            hidden_states = self.cross_attention_block(hidden_states, context)
         hidden_states = self.residual_block_2(hidden_states, time_embedding)
         return hidden_states
 
@@ -636,6 +824,10 @@ class UNet2DModel(nn.Module):
         norm_num_groups: Number of groups for GroupNorm.
         norm_epsilon: Epsilon for GroupNorm.
         attention_head_dimension: Dimension per attention head (default: 1).
+        cross_attention_dim: Dimension of external context for cross-attention.
+            If None, no cross-attention blocks are created (default behavior).
+            Cross-attention blocks are added only at levels where
+            use_attention=True, following the self-attention placement.
     """
 
     def __init__(
@@ -649,6 +841,7 @@ class UNet2DModel(nn.Module):
         norm_num_groups: int = 32,
         norm_epsilon: float = 1e-5,
         attention_head_dimension: int = 1,
+        cross_attention_dim: int = None,
     ):
         super().__init__()
 
@@ -674,6 +867,10 @@ class UNet2DModel(nn.Module):
 
         for level_index, level_output_channels in enumerate(block_output_channels):
             is_final_block = level_index == len(block_output_channels) - 1
+            # Only pass cross_attention_dim to levels that have attention enabled
+            level_cross_attention_dim = (
+                cross_attention_dim if attention_levels[level_index] else None
+            )
             self.down_blocks.append(
                 DownBlock(
                     input_channels=current_channels,
@@ -685,17 +882,20 @@ class UNet2DModel(nn.Module):
                     norm_num_groups=norm_num_groups,
                     norm_epsilon=norm_epsilon,
                     attention_head_dimension=attention_head_dimension,
+                    cross_attention_dim=level_cross_attention_dim,
                 )
             )
             current_channels = level_output_channels
 
         # --- Mid block (bottleneck) ---
+        # Mid block always has self-attention, so include cross-attention if specified
         self.mid_block = UNetMidBlock(
             channels=block_output_channels[-1],
             time_embedding_dimension=time_embedding_dimension,
             norm_num_groups=norm_num_groups,
             norm_epsilon=norm_epsilon,
             attention_head_dimension=attention_head_dimension,
+            cross_attention_dim=cross_attention_dim,
         )
 
         # --- Up blocks (decoder) ---
@@ -714,6 +914,14 @@ class UNet2DModel(nn.Module):
                 min(level_index + 1, len(block_output_channels) - 1)
             ]
 
+            # Mirror the encoder's attention level for the decoder
+            decoder_attention_level = attention_levels[
+                len(block_output_channels) - 1 - level_index
+            ]
+            level_cross_attention_dim = (
+                cross_attention_dim if decoder_attention_level else None
+            )
+
             self.up_blocks.append(
                 UpBlock(
                     input_channels=input_channel,
@@ -721,13 +929,12 @@ class UNet2DModel(nn.Module):
                     output_channels=output_channel,
                     time_embedding_dimension=time_embedding_dimension,
                     num_layers=layers_per_block + 1,
-                    use_attention=attention_levels[
-                        len(block_output_channels) - 1 - level_index
-                    ],
+                    use_attention=decoder_attention_level,
                     add_upsample=not is_final_block,
                     norm_num_groups=norm_num_groups,
                     norm_epsilon=norm_epsilon,
                     attention_head_dimension=attention_head_dimension,
+                    cross_attention_dim=level_cross_attention_dim,
                 )
             )
             previous_output_channel = output_channel
@@ -741,13 +948,21 @@ class UNet2DModel(nn.Module):
             block_output_channels[0], output_channels, kernel_size=3, padding=1
         )
 
-    def forward(self, sample: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        sample: torch.Tensor,
+        timestep: torch.Tensor,
+        context: torch.Tensor = None,
+    ) -> torch.Tensor:
         """
         Predict noise for the given noisy sample and timestep.
 
         Args:
             sample: Noisy images, shape (batch, input_channels, height, width).
             timestep: Diffusion timesteps, shape (batch,).
+            context: Optional external conditioning context for cross-attention,
+                shape (batch, sequence_length, context_dim). Only used when
+                cross_attention_dim was set during construction.
 
         Returns:
             Predicted noise tensor, same spatial shape as sample.
@@ -764,11 +979,13 @@ class UNet2DModel(nn.Module):
         down_block_residual_samples = (sample,)
 
         for down_block in self.down_blocks:
-            sample, residual_samples = down_block(sample, time_embedding)
+            sample, residual_samples = down_block(
+                sample, time_embedding, context=context,
+            )
             down_block_residual_samples += residual_samples
 
         # --- Bottleneck ---
-        sample = self.mid_block(sample, time_embedding)
+        sample = self.mid_block(sample, time_embedding, context=context)
 
         # --- Decoder (up path) ---
         for up_block in self.up_blocks:
@@ -777,7 +994,9 @@ class UNet2DModel(nn.Module):
             skip_connections = down_block_residual_samples[-num_resnets:]
             down_block_residual_samples = down_block_residual_samples[:-num_resnets]
 
-            sample = up_block(sample, skip_connections, time_embedding)
+            sample = up_block(
+                sample, skip_connections, time_embedding, context=context,
+            )
 
         # --- Output ---
         sample = self.output_norm(sample)
@@ -799,6 +1018,7 @@ class UNet(nn.Module):
         - Configurable resolution levels with channel multipliers
         - Configurable ResNet blocks per level
         - Self-attention at selected resolution levels
+        - Optional cross-attention for external conditioning
         - Sinusoidal timestep embeddings
 
     Args:
@@ -817,6 +1037,10 @@ class UNet(nn.Module):
                              Default: (False, False, False, True) -> attention only at 4x4 bottleneck.
         norm_num_groups (int): Number of groups for GroupNorm. Must divide all channel counts.
                              Default: 32.
+        cross_attention_dim (int or None): Dimension of external context for cross-attention.
+                             If None (default), no cross-attention blocks are created.
+                             When set, cross-attention blocks are added after self-attention
+                             at levels where attention is enabled.
     """
 
     def __init__(
@@ -828,6 +1052,7 @@ class UNet(nn.Module):
         layers_per_block=1,
         attention_levels=(False, False, False, True),
         norm_num_groups=32,
+        cross_attention_dim=None,
     ):
         super().__init__()
         self.image_channels = image_channels
@@ -847,9 +1072,10 @@ class UNet(nn.Module):
             attention_levels=attention_levels,
             norm_num_groups=norm_num_groups,
             norm_epsilon=1e-5,
+            cross_attention_dim=cross_attention_dim,
         )
 
-    def forward(self, x, timestep):
+    def forward(self, x, timestep, context=None):
         """
         Predict noise epsilon_theta(x_t, t) for the given noisy input and timestep.
 
@@ -860,6 +1086,9 @@ class UNet(nn.Module):
             x: Noisy images, shape (batch_size, channels, height, width).
                Typically (B, 1, 28, 28) for MNIST.
             timestep: Diffusion timesteps, shape (batch_size,).
+            context: Optional external conditioning context for cross-attention,
+                shape (batch, sequence_length, context_dim). Only used when
+                cross_attention_dim was set during construction.
 
         Returns:
             Predicted noise tensor with the same shape as x.
@@ -885,7 +1114,7 @@ class UNet(nn.Module):
             x_padded = x
 
         # Run through UNet and get predicted noise tensor
-        noise_prediction = self.model(x_padded, timestep)
+        noise_prediction = self.model(x_padded, timestep, context=context)
 
         # Crop back to original spatial dimensions
         if pad_height > 0 or pad_width > 0:

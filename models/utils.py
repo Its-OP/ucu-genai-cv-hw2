@@ -209,9 +209,46 @@ def load_unet_checkpoint(checkpoint_path, device):
     attention_levels = tuple(config.get('attention_levels', (False, False, True, True)))
 
     is_conditioned = config.get('conditioned', False)
+    conditioning_type = config.get('conditioning_type', 'channel_concat')
 
-    if is_conditioned:
-        # Conditioned checkpoint: reconstruct ClassConditionedUNet
+    if is_conditioned and conditioning_type == 'cross_attention':
+        # Cross-attention conditioned checkpoint
+        from models.classifier_free_guidance import CrossAttentionConditionedUNet
+
+        number_of_classes = config['number_of_classes']
+        cross_attention_dim = config['cross_attention_dim']
+
+        print(f"  Cross-attention conditioned model: {number_of_classes} classes, "
+              f"cross_attention_dim={cross_attention_dim}")
+
+        unet = UNet(
+            image_channels=config['image_channels'],
+            output_channels=config['output_channels'],
+            base_channels=config['base_channels'],
+            channel_multipliers=channel_multipliers,
+            layers_per_block=layers_per_block,
+            attention_levels=attention_levels,
+            cross_attention_dim=cross_attention_dim,
+        ).to(device)
+
+        model = CrossAttentionConditionedUNet(
+            unet=unet,
+            number_of_classes=number_of_classes,
+            context_dim=cross_attention_dim,
+            unconditional_probability=0.0,  # No dropout during generation
+        ).to(device)
+
+        # Load full state dict (UNet weights + class embedding weights)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.eval()
+
+        number_of_parameters = sum(
+            parameter.numel() for parameter in model.parameters()
+        )
+        print(f"  CrossAttentionConditionedUNet parameters: {number_of_parameters:,}")
+
+    elif is_conditioned:
+        # Channel-concat conditioned checkpoint (default for conditioned models)
         from models.classifier_free_guidance import ClassConditionedUNet
 
         number_of_classes = config['number_of_classes']
