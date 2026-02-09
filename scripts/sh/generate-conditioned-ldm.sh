@@ -13,11 +13,8 @@
 #   bash scripts/sh/generate-conditioned-ldm.sh path/to/vae.pt path/to/cond_unet.pt
 #   bash scripts/sh/generate-conditioned-ldm.sh path/to/vae.pt path/to/cond_unet.pt --num_samples 3
 #
-# Examples (DDIM sampling):
-#   bash scripts/sh/generate-conditioned-ldm.sh path/to/vae.pt path/to/cond_unet.pt --mode ddim --ddim_steps 50
-#
 # Output structure (timestamped to avoid overwriting):
-#   generated_samples/20260209_143052-conditioned-latent-ddpm/
+#   generated_samples/20260209_143052-conditioned-latent-ddim/
 #     grid.pdf                                  # All samples in a grid
 #     profile.txt                               # Per-sample timing + averages
 #     sample_000_class0/                        # Per-sample subfolder (labeled by class)
@@ -33,9 +30,8 @@
 #   --guidance_scale FLOAT  CFG guidance scale (default: 3.0)
 #   --output_dir PATH       Base directory for outputs (default: ./generated_samples)
 #   --nrow N                Images per row in grid (default: 10)
-#   --mode MODE             Sampling mode: ddpm or ddim (default: ddpm)
-#   --ddim_steps N          DDIM sampling steps (default: 50, only with --mode ddim)
-#   --eta FLOAT             DDIM stochasticity 0.0-1.0 (default: 0.0, only with --mode ddim)
+#   --sampling_steps N      Number of DDIM sampling steps (default: 100)
+#   --eta FLOAT             DDIM stochasticity 0.0-1.0 (default: 0.05)
 
 set -e
 

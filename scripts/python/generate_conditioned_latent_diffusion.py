@@ -1,14 +1,19 @@
 """
-Class-Conditioned Latent Diffusion Model Sample Generation Script (DDPM / DDIM).
+Class-Conditioned Latent Diffusion Model Sample Generation Script (DDIM).
 
 Loads a trained class-conditioned latent UNet checkpoint and a pre-trained VAE
 checkpoint, then generates MNIST digit samples for specific classes using
 classifier-free guidance (Ho & Salimans 2022).
 
+Sampling uses DDIM (Song et al. 2021) with a strided timestep schedule and
+η=0.05 for slight stochasticity. Full 1000-step DDPM sampling is not
+supported because CFG-amplified prediction errors accumulate across
+stochastic steps, degrading sample quality in latent space.
+
 Pipeline per sample:
     1. Set target class label on the conditioned UNet
     2. Sample noise in latent space: z_T ~ N(0, I), shape (1, latent_channels, 4, 4)
-    3. Denoise via DDPM or DDIM with CFG: z_T -> z_0
+    3. Denoise via DDIM with CFG: z_T -> z_0
     4. Decode latent to pixel space: x_hat = VAE.decode(z_0), shape (1, 1, 32, 32)
     5. Crop back to 28x28: remove the 2-pixel reflect padding
 
@@ -31,7 +36,6 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import torch
 
-from models.ddpm import DDPM
 from models.ddim import DDIMSampler
 from models.classifier_free_guidance import (
     ClassConditionedUNet,
@@ -41,7 +45,6 @@ from models.utils import (
     get_device,
     load_unet_checkpoint,
     load_vae_checkpoint,
-    compute_denoising_intermediate_steps_ddpm,
     compute_denoising_intermediate_steps_ddim,
     save_single_image,
     save_images,
@@ -105,33 +108,18 @@ def parse_args():
         help="Force device (cuda, mps, cpu). Auto-detects if not specified.",
     )
     parser.add_argument(
-        "--mode",
-        type=str,
-        default="ddpm",
-        choices=["ddpm", "ddim"],
-        help="Sampling mode: ddpm (full T steps) or ddim (fewer steps)",
-    )
-    parser.add_argument(
-        "--ddim_steps",
+        "--sampling_steps",
         type=int,
-        default=50,
-        help="Number of DDIM sampling steps (only used with --mode ddim)",
+        default=100,
+        help="Number of DDIM sampling steps (default: 100). "
+        "Uses a strided subsequence of the full T=1000 schedule.",
     )
     parser.add_argument(
         "--eta",
         type=float,
-        default=0.0,
-        help="DDIM stochasticity: 0.0=deterministic, 1.0=DDPM-like "
-        "(only with --mode ddim)",
-    )
-    parser.add_argument(
-        "--dynamic_thresholding_percentile",
-        type=float,
-        default=0.995,
-        help="Dynamic thresholding percentile for DDPM sampling in latent "
-        "space (Saharia et al. 2022). Prevents CFG-induced divergence over "
-        "1000 stochastic steps. Set to 0 to disable. Only used with "
-        "--mode ddpm (default: 0.995)",
+        default=0.05,
+        help="DDIM stochasticity parameter (default: 0.05). "
+        "0.0 = fully deterministic, higher values add more noise.",
     )
     return parser.parse_args()
 
@@ -211,7 +199,7 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_directory = os.path.join(
         args.output_dir,
-        f"{timestamp}-conditioned-latent-{args.mode}",
+        f"{timestamp}-conditioned-latent-ddim",
     )
     os.makedirs(run_directory, exist_ok=True)
 
@@ -246,26 +234,21 @@ def main():
         conditioned_unet, guidance_scale=args.guidance_scale,
     )
 
-    # Setup sampler and compute denoising intermediate steps
-    if args.mode == "ddim":
-        ddim_sampler = DDIMSampler(
-            ddpm, ddim_timesteps=args.ddim_steps, eta=args.eta,
-        ).to(device)
-        intermediate_steps = compute_denoising_intermediate_steps_ddim(
-            ddim_sampler.timestep_sequence
-        )
-        print(
-            f"\nGenerating {total_samples} samples using DDIM "
-            f"({args.ddim_steps} steps, eta={args.eta})"
-        )
-    else:
-        intermediate_steps = compute_denoising_intermediate_steps_ddpm(
-            ddpm.timesteps
-        )
-        print(
-            f"\nGenerating {total_samples} samples using DDPM "
-            f"({ddpm.timesteps} steps)"
-        )
+    # Setup DDIM sampler with strided timestep schedule.
+    # Full 1000-step DDPM is incompatible with CFG in latent space: the
+    # CFG-amplified noise predictions cause systematic bias that accumulates
+    # across stochastic steps, degrading sample quality. DDIM with a strided
+    # schedule (100 steps) and small η avoids this entirely.
+    sampler = DDIMSampler(
+        ddpm, ddim_timesteps=args.sampling_steps, eta=args.eta,
+    ).to(device)
+    intermediate_steps = compute_denoising_intermediate_steps_ddim(
+        sampler.timestep_sequence
+    )
+    print(
+        f"\nGenerating {total_samples} samples using DDIM "
+        f"({args.sampling_steps} steps, η={args.eta})"
+    )
 
     print(f"Classes: {class_labels}")
     print(f"Samples per class: {args.num_samples}")
@@ -298,26 +281,13 @@ def main():
             sample_start_time = time.time()
 
             # clip_denoised=False because latent values are not bounded to [-1, 1]
-            if args.mode == "ddim":
-                latent_sample, intermediates = ddim_sampler.ddim_sample_loop(
-                    cfg_wrapper,
-                    single_latent_shape,
-                    return_intermediates=True,
-                    intermediate_steps=intermediate_steps,
-                    clip_denoised=False,
-                )
-            else:
-                # DDPM in latent space with CFG needs dynamic thresholding
-                # (Saharia et al. 2022) to prevent accumulated drift from
-                # CFG-amplified x̂₀ predictions over 1000 stochastic steps
-                latent_sample, intermediates = ddpm.p_sample_loop(
-                    cfg_wrapper,
-                    single_latent_shape,
-                    return_intermediates=True,
-                    intermediate_steps=intermediate_steps,
-                    clip_denoised=False,
-                    dynamic_thresholding_percentile=args.dynamic_thresholding_percentile,
-                )
+            latent_sample, intermediates = sampler.ddim_sample_loop(
+                cfg_wrapper,
+                single_latent_shape,
+                return_intermediates=True,
+                intermediate_steps=intermediate_steps,
+                clip_denoised=False,
+            )
 
             sample_elapsed_time = time.time() - sample_start_time
             per_sample_times.append(sample_elapsed_time)
@@ -363,9 +333,9 @@ def main():
     write_generation_profile(
         profile_path=profile_path,
         per_sample_times=per_sample_times,
-        mode=args.mode,
-        ddim_steps=args.ddim_steps if args.mode == "ddim" else None,
-        eta=args.eta if args.mode == "ddim" else None,
+        mode="ddim",
+        ddim_steps=args.sampling_steps,
+        eta=args.eta,
         total_timesteps=ddpm.timesteps,
     )
     print(f"Profile saved: {profile_path}")

@@ -29,49 +29,6 @@ def extract(values: torch.Tensor, t: torch.Tensor, shape: tuple) -> torch.Tensor
     return out.reshape(batch_size, *((1,) * (len(shape) - 1)))
 
 
-def dynamic_thresholding(
-    predicted_original_sample: torch.Tensor, percentile: float,
-) -> torch.Tensor:
-    """
-    Dynamic thresholding for predicted x₀ (Saharia et al. 2022, Imagen).
-
-    When using classifier-free guidance (CFG) in latent-space DDPM sampling,
-    the guided noise prediction ε_guided = ε_uncond + w·(ε_cond - ε_uncond)
-    can overshoot, producing extreme x̂₀ values. Over 1000 stochastic DDPM
-    steps, these extremes accumulate and degrade sample quality.
-
-    Dynamic thresholding computes a per-sample clip range from the data:
-        s = max(1, percentile(|x̂₀|, p))      (e.g., p = 99.5%)
-        x̂₀_thresholded = clamp(x̂₀, -s, s) / s
-
-    This bounds x̂₀ adaptively without hardcoding a fixed range (which would
-    be wrong for unbounded latent spaces), preventing accumulated drift while
-    preserving the natural scale of the latent representation.
-
-    Note: DDIM (deterministic, η=0) does not suffer from this issue because
-    it adds no stochastic noise at each step, so error does not accumulate.
-
-    Args:
-        predicted_original_sample: Reconstructed x̂₀, shape (B, C, H, W).
-        percentile: Percentile for computing the clip threshold (e.g., 0.995).
-
-    Returns:
-        Thresholded x̂₀, same shape as input.
-    """
-    batch_size = predicted_original_sample.shape[0]
-    # Flatten each sample to compute per-sample percentile: (B, C*H*W)
-    flattened = predicted_original_sample.reshape(batch_size, -1).abs()
-    # Per-sample threshold: s = percentile(|x̂₀|, p), clamped to at least 1.0
-    # quantile expects a value in [0, 1]
-    threshold = torch.quantile(flattened, percentile, dim=1)
-    threshold = torch.clamp(threshold, min=1.0)
-    # Reshape for broadcasting: (B,) -> (B, 1, 1, 1)
-    threshold = threshold.view(batch_size, *([1] * (predicted_original_sample.ndim - 1)))
-    # Clamp x̂₀ to [-s, s]. Unlike the Imagen pixel-space variant which also
-    # rescales by 1/s, we skip the rescaling to preserve the natural latent scale.
-    return predicted_original_sample.clamp(-threshold, threshold)
-
-
 class DDPM(nn.Module):
     """
     Denoising Diffusion Probabilistic Model.
@@ -153,7 +110,6 @@ class DDPM(nn.Module):
     def p_sample(
         self, model: nn.Module, x_t: torch.Tensor, t: torch.Tensor, t_index: int,
         clip_denoised: bool = True,
-        dynamic_thresholding_percentile: float = 0.0,
     ) -> torch.Tensor:
         """
         Reverse diffusion step: sample x_{t-1} from p_θ(x_{t-1} | x_t).
@@ -161,10 +117,8 @@ class DDPM(nn.Module):
         Following the diffusers DDPMScheduler approach:
             1. Predict noise: ε_θ(x_t, t)
             2. Reconstruct x₀: x̂₀ = √(1/ᾱ_t) · x_t  -  √(1/ᾱ_t - 1) · ε_θ
-            3. Threshold x̂₀ for numerical stability:
-               - Pixel space (clip_denoised=True): static clip to [-1, 1]
-               - Latent space with CFG (dynamic_thresholding_percentile > 0):
-                 dynamic thresholding (Saharia et al. 2022, Imagen)
+            3. Optionally clip x̂₀ to [-1, 1] for numerical stability
+               (appropriate for pixel space; disable for latent diffusion)
             4. Compute posterior mean (DDPM paper Eq. 7):
                μ̃_t = (√ᾱ_{t-1} · β_t)/(1 - ᾱ_t) · x̂₀  +  (√α_t · (1 - ᾱ_{t-1}))/(1 - ᾱ_t) · x_t
             5. Sample: x_{t-1} = μ̃_t + √β̃_t · z,  where z ~ N(0, I) for t > 0
@@ -177,12 +131,6 @@ class DDPM(nn.Module):
             clip_denoised: If True, clip predicted x₀ to [-1, 1]. Set to True for
                 pixel-space diffusion, False for latent-space diffusion where
                 latent values are not bounded to [-1, 1].
-            dynamic_thresholding_percentile: If > 0, apply dynamic thresholding
-                (Saharia et al. 2022) to predicted x₀ using this percentile
-                (e.g., 0.995). This prevents divergence when using classifier-free
-                guidance in latent space, where static clipping is inappropriate
-                but unbounded x₀ causes accumulated error over 1000 DDPM steps.
-                Only used when clip_denoised is False.
         """
         # Predict noise ε_θ(x_t, t)
         predicted_noise = model(x_t, t)
@@ -195,19 +143,13 @@ class DDPM(nn.Module):
             - extract(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape) * predicted_noise
         )
 
-        # Threshold predicted x₀ for numerical stability:
+        # Clip predicted x₀ to [-1, 1] for numerical stability in pixel space
+        # (matching diffusers DDPMScheduler clip_sample=True, clip_sample_range=1.0).
+        # Disabled for latent-space diffusion where latents are unbounded.
         if clip_denoised:
-            # Pixel space: static clip to [-1, 1]
-            # (matching diffusers DDPMScheduler clip_sample=True, clip_sample_range=1.0)
             predicted_original_sample = predicted_original_sample.clamp(-1.0, 1.0)
-        elif dynamic_thresholding_percentile > 0:
-            # Latent space with CFG: dynamic thresholding (Saharia et al. 2022, Imagen)
-            # Prevents accumulated drift from CFG-amplified x̂₀ over 1000 stochastic steps
-            predicted_original_sample = dynamic_thresholding(
-                predicted_original_sample, dynamic_thresholding_percentile,
-            )
 
-        # Compute posterior mean using thresholded x₀ (DDPM paper Eq. 7):
+        # Compute posterior mean using clipped x₀ (DDPM paper Eq. 7):
         #   μ̃_t = coeff_x0 · x̂₀ + coeff_xt · x_t
         model_mean = (
             extract(self.posterior_mean_coeff_x0, t, x_t.shape) * predicted_original_sample
@@ -229,7 +171,6 @@ class DDPM(nn.Module):
         return_intermediates: bool = False,
         intermediate_steps: list = None,
         clip_denoised: bool = True,
-        dynamic_thresholding_percentile: float = 0.0,
     ) -> torch.Tensor:
         """
         Full reverse diffusion: generate images from pure noise.
@@ -247,9 +188,6 @@ class DDPM(nn.Module):
             intermediate_steps: Timestep indices at which to save intermediates.
             clip_denoised: If True, clip predicted x₀ to [-1, 1] at each reverse step.
                 Set to False for latent-space diffusion.
-            dynamic_thresholding_percentile: If > 0, apply dynamic thresholding
-                (Saharia et al. 2022) to predicted x₀. Only used when
-                clip_denoised is False. See p_sample() for details.
         """
         device = self.betas.device
         batch_size = shape[0]
@@ -263,11 +201,7 @@ class DDPM(nn.Module):
 
         for i in tqdm(reversed(range(self.timesteps)), desc='Sampling', total=self.timesteps):
             t = torch.full((batch_size,), i, device=device, dtype=torch.long)
-            img = self.p_sample(
-                model, img, t, i,
-                clip_denoised=clip_denoised,
-                dynamic_thresholding_percentile=dynamic_thresholding_percentile,
-            )
+            img = self.p_sample(model, img, t, i, clip_denoised=clip_denoised)
 
             if return_intermediates and i in intermediate_steps:
                 intermediates.append((i, img.clone()))
