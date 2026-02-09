@@ -420,7 +420,7 @@ def main():
                 unet, ddpm, vae, 10, latent_channels, device,
                 scaling_factor=scaling_factor,
             )
-            save_images(samples, f"{exp_dir}/epoch_samples/epoch_{epoch + 1:03d}.png")
+            save_images(samples, f"{exp_dir}/epoch_samples/epoch_{epoch + 1:03d}.pdf")
 
             # Save checkpoint with EMA weights
             checkpoint_path = (
@@ -459,7 +459,7 @@ def main():
         scaling_factor=scaling_factor,
     )
     inference_time = time.time() - inference_start
-    save_images(final_samples, f"{exp_dir}/final_samples/final_grid.png")
+    save_images(final_samples, f"{exp_dir}/final_samples/final_grid.pdf")
 
     # Save individual final samples
     import matplotlib.pyplot as plt
@@ -471,14 +471,14 @@ def main():
         plt.imshow(image, cmap="gray")
         plt.axis("off")
         plt.savefig(
-            f"{exp_dir}/final_samples/sample_{sample_index}.png",
+            f"{exp_dir}/final_samples/sample_{sample_index}.pdf",
             bbox_inches="tight",
             dpi=100,
         )
         plt.close()
 
     # Save loss curves
-    plot_loss_curves(train_losses, eval_losses, f"{exp_dir}/loss_curves.png")
+    plot_loss_curves(train_losses, eval_losses, f"{exp_dir}/loss_curves.pdf")
 
     # Save performance metrics
     save_performance_metrics(

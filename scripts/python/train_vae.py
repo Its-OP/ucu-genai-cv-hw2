@@ -331,11 +331,11 @@ def main():
             model.eval()
 
             # Save side-by-side original vs reconstruction comparison
-            comparison_path = f"{exp_dir}/epoch_samples/epoch_{epoch + 1:03d}.png"
+            comparison_path = f"{exp_dir}/epoch_samples/epoch_{epoch + 1:03d}.pdf"
             save_reconstruction_comparison(model, test_loader, device, comparison_path)
 
             # Save latent space scatter plot showing encoder clustering progress
-            scatter_path = f"{exp_dir}/latent_space/epoch_{epoch + 1:03d}.png"
+            scatter_path = f"{exp_dir}/latent_space/epoch_{epoch + 1:03d}.pdf"
             save_latent_space_scatter(model, test_loader, device, scatter_path)
 
             # Save checkpoint with EMA weights (model currently has EMA applied)
@@ -383,20 +383,20 @@ def main():
     # Save final reconstruction comparison
     save_reconstruction_comparison(
         model, test_loader, device,
-        f"{exp_dir}/final_samples/final_reconstruction.png",
+        f"{exp_dir}/final_samples/final_reconstruction.pdf",
     )
 
     # Save final latent space scatter plot
     print("Generating final latent space visualization...")
     save_latent_space_scatter(
         model, test_loader, device,
-        f"{exp_dir}/final_samples/latent_space.png",
+        f"{exp_dir}/final_samples/latent_space.pdf",
     )
 
     # Save loss curves
     plot_loss_curves(
         train_losses_history, eval_losses_history,
-        f"{exp_dir}/loss_curves.png",
+        f"{exp_dir}/loss_curves.pdf",
     )
 
     # Save performance metrics

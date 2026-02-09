@@ -224,7 +224,7 @@ def main():
             ema.apply_shadow(model)
             model.eval()
             samples = ddpm.p_sample_loop(model, (10, 1, 28, 28))
-            save_images(samples, f'{exp_dir}/epoch_samples/epoch_{epoch+1:03d}.png')
+            save_images(samples, f'{exp_dir}/epoch_samples/epoch_{epoch+1:03d}.pdf')
 
             # Save checkpoint with EMA weights (model currently has EMA applied)
             checkpoint_path = f'{exp_dir}/checkpoints/checkpoint_epoch_{epoch+1:03d}.pt'
@@ -254,7 +254,7 @@ def main():
 
     # 10 final samples
     final_samples = ddpm.p_sample_loop(model, (10, 1, 28, 28))
-    save_images(final_samples, f'{exp_dir}/final_samples/final_grid.png')
+    save_images(final_samples, f'{exp_dir}/final_samples/final_grid.pdf')
 
     # Save individual final samples
     for sample_index in range(10):
@@ -263,7 +263,7 @@ def main():
         plt.figure(figsize=(3, 3))
         plt.imshow(image, cmap='gray')
         plt.axis('off')
-        plt.savefig(f'{exp_dir}/final_samples/sample_{sample_index}.png',
+        plt.savefig(f'{exp_dir}/final_samples/sample_{sample_index}.pdf',
                     bbox_inches='tight', dpi=100)
         plt.close()
 
@@ -275,11 +275,11 @@ def main():
     )
     inference_time = time.time() - inference_start
 
-    save_denoising_progression(intermediates, f'{exp_dir}/denoising_steps/progression.png')
+    save_denoising_progression(intermediates, f'{exp_dir}/denoising_steps/progression.pdf')
     save_individual_denoising_steps(intermediates, f'{exp_dir}/denoising_steps')
 
     # Save loss curves
-    plot_loss_curves(train_losses, eval_losses, f'{exp_dir}/loss_curves.png')
+    plot_loss_curves(train_losses, eval_losses, f'{exp_dir}/loss_curves.pdf')
 
     # Save performance metrics
     save_performance_metrics(
