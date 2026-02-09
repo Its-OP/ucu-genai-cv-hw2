@@ -30,6 +30,7 @@ from tqdm import tqdm
 from data import get_train_loader, get_test_loader
 from models.vae import VAE
 from models.ddpm import DDPM
+from models.ddim import DDIMSampler
 from models.classifier_free_guidance import (
     ClassConditionedUNet,
     ClassifierFreeGuidanceWrapper,
@@ -113,6 +114,18 @@ def parse_args():
         type=int,
         default=10,
         help="Number of classes for conditioning (default: 10 for MNIST)",
+    )
+    parser.add_argument(
+        "--ddim_steps",
+        type=int,
+        default=100,
+        help="Number of DDIM sampling steps for epoch demonstrations (default: 100)",
+    )
+    parser.add_argument(
+        "--ddim_eta",
+        type=float,
+        default=0.05,
+        help="DDIM stochasticity parameter η for epoch demonstrations (default: 0.05)",
     )
     return parser.parse_args()
 
@@ -278,16 +291,21 @@ def evaluate(
 @torch.no_grad()
 def generate_conditioned_samples(
     conditioned_unet, ddpm, vae, latent_channels, device,
-    scaling_factor=1.0, guidance_scale=3.0,
+    scaling_factor=1.0, guidance_scale=3.0, ddim_steps=100, ddim_eta=0.05,
 ):
     """
     Generate one sample per digit class (0-9) using classifier-free guidance.
+
+    Uses DDIM sampling (Song et al. 2020) instead of full DDPM reverse diffusion
+    for significantly faster generation. With 100 DDIM steps (vs 1000 DDPM steps)
+    and CFG's dual forward pass, this reduces per-demo cost from 20,000 to 2,000
+    UNet forward passes (~10× speedup).
 
     Pipeline per class:
         1. Set class label on the conditioned UNet
         2. Wrap with ClassifierFreeGuidanceWrapper for CFG sampling
         3. Sample noise in latent space: z_T ~ N(0, I)
-        4. Denoise via DDPM with CFG: z_T -> z_0_scaled
+        4. Denoise via DDIM with CFG: z_T -> z_0_scaled
         5. Unscale and decode: z_0 -> pixel space -> crop to 28x28
 
     Args:
@@ -298,6 +316,9 @@ def generate_conditioned_samples(
         device: Torch device.
         scaling_factor: Latent scaling factor (1 / std(z)).
         guidance_scale: CFG weight (higher = stronger class adherence).
+        ddim_steps: Number of DDIM sampling steps (default: 100).
+        ddim_eta: DDIM stochasticity parameter η (default: 0.05).
+            η=0 is fully deterministic, η=1 matches DDPM variance.
 
     Returns:
         Generated images, shape (10, 1, 28, 28), one per digit class.
@@ -307,6 +328,11 @@ def generate_conditioned_samples(
         conditioned_unet, guidance_scale=guidance_scale,
     )
 
+    # Use DDIM for faster sampling: ddim_steps << ddpm.timesteps
+    # DDIM reuses the DDPM's trained noise schedule (alphas_cumprod) but
+    # with a strided subsequence of timesteps (Song et al. 2020)
+    ddim_sampler = DDIMSampler(ddpm, ddim_timesteps=ddim_steps, eta=ddim_eta)
+
     all_samples = []
     latent_shape = (1, latent_channels, 4, 4)
 
@@ -315,9 +341,9 @@ def generate_conditioned_samples(
         label_tensor = torch.tensor([class_label], device=device)
         conditioned_unet.set_class_labels(label_tensor)
 
-        # Generate in latent space with CFG
+        # Generate in latent space with CFG using DDIM
         # clip_denoised=False because latent values are not bounded to [-1, 1]
-        latent_sample = ddpm.p_sample_loop(
+        latent_sample = ddim_sampler.ddim_sample_loop(
             cfg_wrapper, latent_shape, clip_denoised=False,
         )
 
@@ -392,6 +418,8 @@ def main():
         "number_of_classes": args.number_of_classes,
         "unconditional_probability": args.unconditional_probability,
         "guidance_scale": args.guidance_scale,
+        "ddim_steps": args.ddim_steps,
+        "ddim_eta": args.ddim_eta,
     }
     log_config(exp_dir, config)
 
@@ -500,11 +528,13 @@ def main():
             ema.apply_shadow(conditioned_unet)
             conditioned_unet.eval()
 
-            # Generate one sample per digit class (0-9) with CFG
+            # Generate one sample per digit class (0-9) with CFG + DDIM
             samples = generate_conditioned_samples(
                 conditioned_unet, ddpm, vae, latent_channels, device,
                 scaling_factor=scaling_factor,
                 guidance_scale=args.guidance_scale,
+                ddim_steps=args.ddim_steps,
+                ddim_eta=args.ddim_eta,
             )
             save_images(
                 samples,
@@ -545,12 +575,14 @@ def main():
     )
     print(f"Final checkpoint saved: {final_checkpoint_path}")
 
-    # Generate final samples: one per digit class
+    # Generate final samples: one per digit class using DDIM
     inference_start = time.time()
     final_samples = generate_conditioned_samples(
         conditioned_unet, ddpm, vae, latent_channels, device,
         scaling_factor=scaling_factor,
         guidance_scale=args.guidance_scale,
+        ddim_steps=args.ddim_steps,
+        ddim_eta=args.ddim_eta,
     )
     inference_time = time.time() - inference_start
     save_images(
