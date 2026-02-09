@@ -256,7 +256,7 @@ class TestClassifierFreeGuidanceWrapper:
         self, small_conditioned_unet, sample_latent_batch,
         sample_labels, sample_timesteps_cfg, device,
     ):
-        """With guidance_scale=0, output should equal unconditional prediction."""
+        """With guidance_scale=0 and no rescaling, output equals unconditional."""
         small_conditioned_unet.eval()
         small_conditioned_unet.set_class_labels(sample_labels)
 
@@ -266,10 +266,10 @@ class TestClassifierFreeGuidanceWrapper:
             sample_latent_batch, sample_timesteps_cfg,
         ).clone()
 
-        # Get CFG output with scale=0
+        # Get CFG output with scale=0, rescale_cfg=False to test raw formula
         small_conditioned_unet.set_class_labels(sample_labels)
         cfg_wrapper = ClassifierFreeGuidanceWrapper(
-            small_conditioned_unet, guidance_scale=0.0,
+            small_conditioned_unet, guidance_scale=0.0, rescale_cfg=False,
         )
         cfg_output = cfg_wrapper(sample_latent_batch, sample_timesteps_cfg)
 
@@ -280,7 +280,12 @@ class TestClassifierFreeGuidanceWrapper:
         self, small_conditioned_unet, sample_latent_batch,
         sample_labels, sample_timesteps_cfg, device,
     ):
-        """With guidance_scale=1, output should equal conditional prediction."""
+        """With guidance_scale=1, output equals conditional prediction.
+
+        Holds for both rescaled and unrescaled CFG, because at w=1:
+            ε_guided = ε_uncond + 1 × (ε_cond − ε_uncond) = ε_cond
+        and rescaling ε_cond to match std(ε_cond) is a no-op.
+        """
         small_conditioned_unet.eval()
 
         # Get conditional prediction directly (no dropout in eval mode)
@@ -289,7 +294,7 @@ class TestClassifierFreeGuidanceWrapper:
             sample_latent_batch, sample_timesteps_cfg,
         ).clone()
 
-        # Get CFG output with scale=1
+        # Get CFG output with scale=1 (rescale_cfg=True by default — still works)
         small_conditioned_unet.set_class_labels(sample_labels)
         cfg_wrapper = ClassifierFreeGuidanceWrapper(
             small_conditioned_unet, guidance_scale=1.0,
@@ -333,6 +338,107 @@ class TestClassifierFreeGuidanceWrapper:
         with torch.no_grad():
             output = cfg_wrapper(sample_latent_batch, sample_timesteps_cfg)
         assert not output.requires_grad
+
+    def test_rescale_cfg_matches_conditional_std(
+        self, small_conditioned_unet, sample_latent_batch,
+        sample_labels, sample_timesteps_cfg, device,
+    ):
+        """With rescale_cfg=True, guided prediction std matches conditional std.
+
+        The rescaled CFG formula normalizes the guided noise prediction so
+        its per-sample standard deviation matches the conditional prediction's
+        std, preventing norm inflation that destabilizes DDPM sampling.
+        """
+        small_conditioned_unet.eval()
+        small_conditioned_unet.set_class_labels(sample_labels)
+
+        # Get conditional prediction directly
+        conditional_output = small_conditioned_unet(
+            sample_latent_batch, sample_timesteps_cfg,
+        ).clone()
+
+        # Get rescaled CFG output with high guidance scale
+        small_conditioned_unet.set_class_labels(sample_labels)
+        cfg_wrapper = ClassifierFreeGuidanceWrapper(
+            small_conditioned_unet, guidance_scale=5.0, rescale_cfg=True,
+        )
+        cfg_output = cfg_wrapper(sample_latent_batch, sample_timesteps_cfg)
+
+        # Per-sample std should match within tolerance
+        reduce_dims = tuple(range(1, cfg_output.ndim))
+        std_conditional = conditional_output.std(dim=reduce_dims)
+        std_guided = cfg_output.std(dim=reduce_dims)
+
+        assert torch.allclose(std_guided, std_conditional, rtol=1e-4)
+
+    def test_rescale_cfg_false_preserves_inflated_norm(
+        self, small_conditioned_unet, sample_latent_batch,
+        sample_labels, sample_timesteps_cfg, device,
+    ):
+        """With rescale_cfg=False, the raw CFG formula is used unchanged.
+
+        At high guidance scales, the unrescaled output should have a larger
+        standard deviation than the conditional prediction.
+        """
+        small_conditioned_unet.eval()
+        small_conditioned_unet.set_class_labels(sample_labels)
+
+        # Get conditional prediction
+        conditional_output = small_conditioned_unet(
+            sample_latent_batch, sample_timesteps_cfg,
+        ).clone()
+
+        # Get unrescaled CFG output with high guidance scale
+        small_conditioned_unet.set_class_labels(sample_labels)
+        cfg_wrapper = ClassifierFreeGuidanceWrapper(
+            small_conditioned_unet, guidance_scale=5.0, rescale_cfg=False,
+        )
+        cfg_output = cfg_wrapper(sample_latent_batch, sample_timesteps_cfg)
+
+        # Unrescaled CFG with w=5 should inflate the overall std
+        std_conditional = conditional_output.std().item()
+        std_guided = cfg_output.std().item()
+
+        # With w=5, the guided prediction norm should be noticeably larger
+        assert std_guided > std_conditional * 0.9
+
+    def test_rescale_cfg_preserves_direction(
+        self, small_conditioned_unet, sample_latent_batch,
+        sample_labels, sample_timesteps_cfg, device,
+    ):
+        """Rescaled and unrescaled CFG should produce outputs with same direction.
+
+        Rescaling only changes the magnitude (std), not the direction. The
+        cosine similarity between rescaled and unrescaled outputs should be
+        close to 1.0.
+        """
+        small_conditioned_unet.eval()
+        small_conditioned_unet.set_class_labels(sample_labels)
+
+        cfg_rescaled = ClassifierFreeGuidanceWrapper(
+            small_conditioned_unet, guidance_scale=3.0, rescale_cfg=True,
+        )
+        output_rescaled = cfg_rescaled(
+            sample_latent_batch, sample_timesteps_cfg,
+        ).clone()
+
+        small_conditioned_unet.set_class_labels(sample_labels)
+        cfg_unrescaled = ClassifierFreeGuidanceWrapper(
+            small_conditioned_unet, guidance_scale=3.0, rescale_cfg=False,
+        )
+        output_unrescaled = cfg_unrescaled(
+            sample_latent_batch, sample_timesteps_cfg,
+        ).clone()
+
+        # Flatten and compute cosine similarity per sample
+        output_rescaled_flat = output_rescaled.flatten(start_dim=1)
+        output_unrescaled_flat = output_unrescaled.flatten(start_dim=1)
+        cosine_similarity = torch.nn.functional.cosine_similarity(
+            output_rescaled_flat, output_unrescaled_flat, dim=1,
+        )
+
+        # Direction should be preserved (cosine similarity ≈ 1.0)
+        assert (cosine_similarity > 0.99).all()
 
 
 # ---------------------------------------------------------------------------

@@ -150,10 +150,21 @@ def save_checkpoint(model, checkpoint_path, config, epoch, train_loss, eval_loss
                       in the checkpoint (e.g., per-component losses).
     """
     # Handle torch.compile wrapper: extract original module's state_dict
+    # torch.compile may be applied to the top-level model or to submodules
+    # (e.g., conditioned_unet.unet = torch.compile(conditioned_unet.unet)).
+    # In both cases, state_dict keys get a '_orig_mod.' prefix that must be
+    # stripped so checkpoints are loadable without recompiling.
     if hasattr(model, '_orig_mod'):
         model_state_dict = model._orig_mod.state_dict()
     else:
         model_state_dict = model.state_dict()
+
+    # Strip any remaining '_orig_mod.' from keys (handles compiled submodules)
+    cleaned_state_dict = {}
+    for key, value in model_state_dict.items():
+        cleaned_key = key.replace('._orig_mod', '')
+        cleaned_state_dict[cleaned_key] = value
+    model_state_dict = cleaned_state_dict
 
     checkpoint = {
         'model_state_dict': model_state_dict,
@@ -195,6 +206,16 @@ def load_unet_checkpoint(checkpoint_path, device):
 
     print(f"Loading UNet checkpoint: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+
+    # Strip '_orig_mod.' from state_dict keys that torch.compile adds.
+    # This happens when compiled submodules (e.g., conditioned_unet.unet)
+    # are saved without unwrapping first.
+    state_dict = checkpoint['model_state_dict']
+    cleaned_state_dict = {}
+    for key, value in state_dict.items():
+        cleaned_key = key.replace('._orig_mod', '')
+        cleaned_state_dict[cleaned_key] = value
+    checkpoint['model_state_dict'] = cleaned_state_dict
 
     config = checkpoint['config']
     print(f"  UNet config: image_channels={config['image_channels']}, "

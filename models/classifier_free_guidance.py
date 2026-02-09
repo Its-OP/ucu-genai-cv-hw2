@@ -174,6 +174,17 @@ class ClassifierFreeGuidanceWrapper(nn.Module):
 
         ε_guided = ε_uncond + guidance_scale × (ε_cond − ε_uncond)
 
+    When ``rescale_cfg=True``, the guided prediction is rescaled so its
+    per-sample standard deviation matches the conditional prediction's std:
+
+        ε_guided = ε_guided × std(ε_cond) / std(ε_guided)
+
+    This prevents the norm inflation caused by guidance_scale > 1, which
+    would otherwise destabilize DDPM's x₀ reconstruction at high timesteps
+    where the amplification factor √(1/ᾱ_t − 1) reaches ~64,000× under
+    the cosine schedule. (Lin et al. 2023, "Common Diffusion Noise Schedules
+    and Sample Steps are Flawed")
+
     Conforms to the ``model(x, t)`` interface so it can be passed directly
     to ``DDPM.p_sample_loop()`` or ``DDIMSampler.ddim_sample_loop()`` without
     any changes to those modules.
@@ -184,16 +195,22 @@ class ClassifierFreeGuidanceWrapper(nn.Module):
             adherence at the cost of diversity. Typical values: 1.0–7.0.
             w=1.0 is equivalent to standard conditional sampling (no guidance).
             w=0.0 is equivalent to unconditional sampling.
+        rescale_cfg: If True, rescale the guided noise prediction so its
+            standard deviation matches the conditional prediction. This
+            prevents norm inflation that destabilizes multi-step sampling
+            (especially DDPM with 1000 steps). Default: True.
     """
 
     def __init__(
         self,
         conditioned_unet: ClassConditionedUNet,
         guidance_scale: float = 3.0,
+        rescale_cfg: bool = True,
     ):
         super().__init__()
         self.conditioned_unet = conditioned_unet
         self.guidance_scale = guidance_scale
+        self.rescale_cfg = rescale_cfg
 
     def forward(self, x: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
         """
@@ -240,6 +257,33 @@ class ClassifierFreeGuidanceWrapper(nn.Module):
                 noise_prediction_conditional - noise_prediction_unconditional
             )
         )
+
+        # --- Rescale to match conditional prediction's standard deviation ---
+        # CFG with w > 1 inflates the noise prediction norm by approximately
+        # factor w. In DDPM's x₀ reconstruction step, this inflated prediction
+        # is multiplied by √(1/ᾱ_t − 1), which reaches ~64,000× at late
+        # timesteps under the cosine schedule. Over 1000 steps the compounded
+        # error produces blurry samples.
+        #
+        # Rescaling preserves the *direction* of the guided prediction (i.e.,
+        # the class-steering effect) while restoring its *magnitude* to the
+        # scale the DDPM / DDIM sampler expects.
+        #
+        # Formula: ε_guided = ε_guided × std(ε_cond) / std(ε_guided)
+        # (Lin et al. 2023, "Common Diffusion Noise Schedules …")
+        if self.rescale_cfg:
+            # Per-sample standard deviation over (C, H, W) dimensions
+            reduce_dims = tuple(range(1, guided_prediction.ndim))
+            standard_deviation_conditional = noise_prediction_conditional.std(
+                dim=reduce_dims, keepdim=True,
+            )
+            standard_deviation_guided = guided_prediction.std(
+                dim=reduce_dims, keepdim=True,
+            )
+            guided_prediction = guided_prediction * (
+                standard_deviation_conditional
+                / (standard_deviation_guided + 1e-8)
+            )
 
         return guided_prediction
 

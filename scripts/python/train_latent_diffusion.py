@@ -239,7 +239,7 @@ def generate_samples(
 
     Pipeline:
         1. Sample noise in latent space: z_T ~ N(0, I), shape (B, latent_channels, 4, 4)
-        2. Denoise via DDPM reverse process (no x₀ clipping): z_T -> z_0_scaled
+        2. Denoise via DDPM reverse process (with x₀ clipping): z_T -> z_0_scaled
         3. Unscale latents: z_0 = z_0_scaled / scaling_factor
         4. Decode latent to pixel space: x_hat = Dec(z_0), shape (B, 1, 32, 32)
         5. Crop back to 28x28: remove the 2-pixel reflect padding
@@ -257,9 +257,11 @@ def generate_samples(
         Generated images, shape (num_samples, 1, 28, 28), in [-1, 1].
     """
     # Generate in latent space: (num_samples, latent_channels, 4, 4)
-    # clip_denoised=False because latent values are not bounded to [-1, 1]
+    # clip_denoised=True (default) prevents the x₀ reconstruction amplification
+    # cascade at late timesteps of the cosine schedule. Scaled latents have
+    # approximately unit variance, so clip_sample_range=1.0 is appropriate.
     latent_shape = (num_samples, latent_channels, 4, 4)
-    latent_samples = ddpm.p_sample_loop(unet, latent_shape, clip_denoised=False)
+    latent_samples = ddpm.p_sample_loop(unet, latent_shape)
 
     # Unscale latents back to the original VAE latent range before decoding
     # z_0 = z_0_scaled / scaling_factor

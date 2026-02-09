@@ -110,6 +110,7 @@ class DDPM(nn.Module):
     def p_sample(
         self, model: nn.Module, x_t: torch.Tensor, t: torch.Tensor, t_index: int,
         clip_denoised: bool = True,
+        clip_sample_range: float = 1.0,
     ) -> torch.Tensor:
         """
         Reverse diffusion step: sample x_{t-1} from p_θ(x_{t-1} | x_t).
@@ -117,8 +118,11 @@ class DDPM(nn.Module):
         Following the diffusers DDPMScheduler approach:
             1. Predict noise: ε_θ(x_t, t)
             2. Reconstruct x₀: x̂₀ = √(1/ᾱ_t) · x_t  -  √(1/ᾱ_t - 1) · ε_θ
-            3. Optionally clip x̂₀ to [-1, 1] for numerical stability
-               (appropriate for pixel space; disable for latent diffusion)
+            3. Optionally clip x̂₀ to [-range, range] for numerical stability.
+               At late timesteps (t ≈ T) with a cosine schedule, the x₀
+               reconstruction amplification factor √(1/ᾱ_t − 1) reaches ~64,000×,
+               so even small noise-prediction errors produce enormous x̂₀ values.
+               Clamping prevents this from compounding over 1000 reverse steps.
             4. Compute posterior mean (DDPM paper Eq. 7):
                μ̃_t = (√ᾱ_{t-1} · β_t)/(1 - ᾱ_t) · x̂₀  +  (√α_t · (1 - ᾱ_{t-1}))/(1 - ᾱ_t) · x_t
             5. Sample: x_{t-1} = μ̃_t + √β̃_t · z,  where z ~ N(0, I) for t > 0
@@ -128,9 +132,15 @@ class DDPM(nn.Module):
             x_t: Current noisy sample at timestep t.
             t: Batch of timestep indices, shape (B,).
             t_index: Scalar timestep index (used to check if t == 0).
-            clip_denoised: If True, clip predicted x₀ to [-1, 1]. Set to True for
-                pixel-space diffusion, False for latent-space diffusion where
-                latent values are not bounded to [-1, 1].
+            clip_denoised: If True, clip predicted x₀ to [-clip_sample_range,
+                clip_sample_range]. Recommended for both pixel-space and
+                latent-space diffusion to prevent numerical instability from
+                the x₀ reconstruction amplification at late timesteps.
+            clip_sample_range: The symmetric clamp range for predicted x₀ when
+                clip_denoised=True. Use 1.0 for pixel-space images in [-1, 1].
+                For latent-space diffusion with a scaling factor, 1.0 also works
+                well since scaled latents have approximately unit variance.
+                (Matches diffusers DDPMScheduler ``clip_sample_range`` parameter.)
         """
         # Predict noise ε_θ(x_t, t)
         predicted_noise = model(x_t, t)
@@ -143,11 +153,16 @@ class DDPM(nn.Module):
             - extract(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape) * predicted_noise
         )
 
-        # Clip predicted x₀ to [-1, 1] for numerical stability in pixel space
-        # (matching diffusers DDPMScheduler clip_sample=True, clip_sample_range=1.0).
-        # Disabled for latent-space diffusion where latents are unbounded.
+        # Clip predicted x₀ to [-clip_sample_range, clip_sample_range] for
+        # numerical stability (matching diffusers DDPMScheduler clip_sample and
+        # clip_sample_range parameters).
+        # At late timesteps with a cosine schedule, the amplification factor
+        # √(1/ᾱ_t − 1) reaches ~64,000×, so unclamped predictions compound
+        # catastrophically over 1000 reverse steps.
         if clip_denoised:
-            predicted_original_sample = predicted_original_sample.clamp(-1.0, 1.0)
+            predicted_original_sample = predicted_original_sample.clamp(
+                -clip_sample_range, clip_sample_range,
+            )
 
         # Compute posterior mean using clipped x₀ (DDPM paper Eq. 7):
         #   μ̃_t = coeff_x0 · x̂₀ + coeff_xt · x_t
@@ -171,6 +186,7 @@ class DDPM(nn.Module):
         return_intermediates: bool = False,
         intermediate_steps: list = None,
         clip_denoised: bool = True,
+        clip_sample_range: float = 1.0,
     ) -> torch.Tensor:
         """
         Full reverse diffusion: generate images from pure noise.
@@ -186,8 +202,12 @@ class DDPM(nn.Module):
             shape: Shape of samples to generate, e.g. (batch, channels, height, width).
             return_intermediates: If True, also return intermediate samples.
             intermediate_steps: Timestep indices at which to save intermediates.
-            clip_denoised: If True, clip predicted x₀ to [-1, 1] at each reverse step.
-                Set to False for latent-space diffusion.
+            clip_denoised: If True, clip predicted x₀ at each reverse step.
+                Recommended for both pixel-space and latent-space diffusion to
+                prevent the x₀ reconstruction amplification cascade.
+            clip_sample_range: The symmetric clamp range for predicted x₀ when
+                clip_denoised=True. Default 1.0 works for both pixel-space
+                images in [-1, 1] and scaled latents with unit variance.
         """
         device = self.betas.device
         batch_size = shape[0]
@@ -201,7 +221,11 @@ class DDPM(nn.Module):
 
         for i in tqdm(reversed(range(self.timesteps)), desc='Sampling', total=self.timesteps):
             t = torch.full((batch_size,), i, device=device, dtype=torch.long)
-            img = self.p_sample(model, img, t, i, clip_denoised=clip_denoised)
+            img = self.p_sample(
+                model, img, t, i,
+                clip_denoised=clip_denoised,
+                clip_sample_range=clip_sample_range,
+            )
 
             if return_intermediates and i in intermediate_steps:
                 intermediates.append((i, img.clone()))

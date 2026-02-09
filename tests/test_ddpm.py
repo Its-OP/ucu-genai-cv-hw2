@@ -414,3 +414,83 @@ class TestDDPMPSample:
 
         # Assert
         assert x_prev.grad_fn is None
+
+    def test_clip_sample_range_clamps_predicted_x0(self, device, seed):
+        """clip_sample_range should control the clamp bounds for predicted x₀.
+
+        With extreme noise predictions, a smaller clip_sample_range should
+        produce tighter output bounds compared to a larger range.
+        """
+        # Arrange
+        class ExtremeNoiseModel(nn.Module):
+            """Model that outputs large noise predictions."""
+            def forward(self, x, t):
+                return torch.ones_like(x) * 50.0
+
+        ddpm = DDPM(timesteps=1000).to(device)
+        model = ExtremeNoiseModel().to(device)
+        model.eval()
+        x_t = torch.randn(4, 1, 28, 28, device=device)
+        t = torch.full((4,), 500, dtype=torch.long, device=device)
+
+        # Act — generate with two different clip ranges
+        torch.manual_seed(42)
+        x_prev_narrow = ddpm.p_sample(
+            model, x_t, t, t_index=500,
+            clip_denoised=True, clip_sample_range=0.5,
+        )
+        torch.manual_seed(42)
+        x_prev_wide = ddpm.p_sample(
+            model, x_t, t, t_index=500,
+            clip_denoised=True, clip_sample_range=2.0,
+        )
+
+        # Assert — narrow range should produce smaller output values
+        assert x_prev_narrow.abs().max() < x_prev_wide.abs().max()
+
+    def test_clip_sample_range_default_matches_unit_range(self, device, seed):
+        """Default clip_sample_range=1.0 should match the original [-1, 1] clamping."""
+        # Arrange
+        ddpm = DDPM(timesteps=1000).to(device)
+        model = self._create_simple_model(device)
+        model.eval()
+        x_t = torch.randn(4, 1, 28, 28, device=device)
+        t = torch.full((4,), 500, dtype=torch.long, device=device)
+
+        # Act — default (clip_sample_range=1.0) vs explicit 1.0
+        torch.manual_seed(42)
+        x_prev_default = ddpm.p_sample(
+            model, x_t, t, t_index=500, clip_denoised=True,
+        )
+        torch.manual_seed(42)
+        x_prev_explicit = ddpm.p_sample(
+            model, x_t, t, t_index=500,
+            clip_denoised=True, clip_sample_range=1.0,
+        )
+
+        # Assert
+        torch.testing.assert_close(x_prev_default, x_prev_explicit)
+
+    def test_clip_denoised_false_ignores_clip_sample_range(self, device, seed):
+        """When clip_denoised=False, clip_sample_range should be ignored."""
+        # Arrange
+        ddpm = DDPM(timesteps=1000).to(device)
+        model = self._create_simple_model(device)
+        model.eval()
+        x_t = torch.randn(4, 1, 28, 28, device=device)
+        t = torch.full((4,), 500, dtype=torch.long, device=device)
+
+        # Act — clip_denoised=False with different ranges
+        torch.manual_seed(42)
+        x_prev_a = ddpm.p_sample(
+            model, x_t, t, t_index=500,
+            clip_denoised=False, clip_sample_range=0.5,
+        )
+        torch.manual_seed(42)
+        x_prev_b = ddpm.p_sample(
+            model, x_t, t, t_index=500,
+            clip_denoised=False, clip_sample_range=5.0,
+        )
+
+        # Assert — should be identical since clipping is disabled
+        torch.testing.assert_close(x_prev_a, x_prev_b)
