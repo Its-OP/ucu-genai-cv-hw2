@@ -353,6 +353,143 @@ def load_vae_checkpoint(checkpoint_path, device):
     return vae
 
 
+def load_rectified_flow_checkpoint(checkpoint_path, device):
+    """Load a Rectified Flow UNet checkpoint and reconstruct the models.
+
+    Handles pixel-space RF checkpoints, latent-space RF checkpoints,
+    and class-conditioned RF checkpoints (detected via the ``conditioned``
+    flag in the saved config).
+
+    For conditioned checkpoints, reconstructs a ClassConditionedUNet or
+    CrossAttentionConditionedUNet that wraps the UNet.
+
+    Args:
+        checkpoint_path: Path to the .pt checkpoint file.
+        device: Device to load the model onto.
+
+    Returns:
+        Tuple of (model, rectified_flow, config) ready for generation.
+        ``model`` is either a bare UNet or a conditioned wrapper.
+    """
+    from models.unet import UNet
+    from models.rectified_flow import RectifiedFlow
+
+    print(f"Loading Rectified Flow checkpoint: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+
+    config = checkpoint['config']
+    number_of_sampling_steps = config.get('number_of_sampling_steps', 50)
+    print(f"  RF config: image_channels={config['image_channels']}, "
+          f"base_channels={config['base_channels']}, "
+          f"sampling_steps={number_of_sampling_steps}")
+    print(f"  Trained for {checkpoint['epoch'] + 1} epochs "
+          f"(train_loss={checkpoint['train_loss']:.6f}, "
+          f"eval_loss={checkpoint['eval_loss']:.6f})")
+
+    # Architecture parameters (with backward-compatible defaults)
+    channel_multipliers = tuple(config.get('channel_multipliers', (1, 2, 4, 4)))
+    layers_per_block = config.get('layers_per_block', 2)
+    attention_levels = tuple(config.get('attention_levels', (False, False, True, True)))
+
+    is_conditioned = config.get('conditioned', False)
+    conditioning_type = config.get('conditioning_type', 'channel_concat')
+
+    if is_conditioned and conditioning_type == 'cross_attention':
+        from models.classifier_free_guidance import CrossAttentionConditionedUNet
+
+        number_of_classes = config['number_of_classes']
+        cross_attention_dim = config['cross_attention_dim']
+
+        print(f"  Cross-attention conditioned model: {number_of_classes} classes, "
+              f"cross_attention_dim={cross_attention_dim}")
+
+        unet = UNet(
+            image_channels=config['image_channels'],
+            output_channels=config['output_channels'],
+            base_channels=config['base_channels'],
+            channel_multipliers=channel_multipliers,
+            layers_per_block=layers_per_block,
+            attention_levels=attention_levels,
+            cross_attention_dim=cross_attention_dim,
+        ).to(device)
+
+        model = CrossAttentionConditionedUNet(
+            unet=unet,
+            number_of_classes=number_of_classes,
+            context_dim=cross_attention_dim,
+            unconditional_probability=0.0,
+        ).to(device)
+
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.eval()
+
+        number_of_parameters = sum(
+            parameter.numel() for parameter in model.parameters()
+        )
+        print(f"  CrossAttentionConditionedUNet parameters: {number_of_parameters:,}")
+
+    elif is_conditioned:
+        from models.classifier_free_guidance import ClassConditionedUNet
+
+        number_of_classes = config['number_of_classes']
+        output_channels = config['output_channels']
+        spatial_height = config.get('spatial_height', 4)
+        spatial_width = config.get('spatial_width', 4)
+
+        print(f"  Conditioned model: {number_of_classes} classes, "
+              f"output_channels={output_channels}")
+
+        unet = UNet(
+            image_channels=config['image_channels'],
+            output_channels=output_channels,
+            base_channels=config['base_channels'],
+            channel_multipliers=channel_multipliers,
+            layers_per_block=layers_per_block,
+            attention_levels=attention_levels,
+        ).to(device)
+
+        model = ClassConditionedUNet(
+            unet=unet,
+            number_of_classes=number_of_classes,
+            spatial_height=spatial_height,
+            spatial_width=spatial_width,
+            unconditional_probability=0.0,
+        ).to(device)
+
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.eval()
+
+        number_of_parameters = sum(
+            parameter.numel() for parameter in model.parameters()
+        )
+        print(f"  ClassConditionedUNet parameters: {number_of_parameters:,}")
+
+    else:
+        unet = UNet(
+            image_channels=config['image_channels'],
+            base_channels=config['base_channels'],
+            channel_multipliers=channel_multipliers,
+            layers_per_block=layers_per_block,
+            attention_levels=attention_levels,
+        ).to(device)
+
+        unet.load_state_dict(checkpoint['model_state_dict'])
+        unet.eval()
+
+        number_of_parameters = sum(
+            parameter.numel() for parameter in unet.parameters()
+        )
+        print(f"  UNet parameters: {number_of_parameters:,}")
+        model = unet
+
+    # Reconstruct RectifiedFlow scheduler
+    rectified_flow = RectifiedFlow(
+        number_of_sampling_steps=number_of_sampling_steps,
+    ).to(device)
+
+    return model, rectified_flow, config
+
+
 # ---------------------------------------------------------------------------
 #  Experiment logging
 # ---------------------------------------------------------------------------
@@ -625,6 +762,34 @@ def compute_denoising_intermediate_steps_ddpm(total_timesteps):
     return unique_steps
 
 
+def compute_denoising_intermediate_steps_rf(number_of_steps):
+    """Compute step indices at every 10% of the Rectified Flow Euler sampling process.
+
+    For RF, the Euler loop runs from step index (N-1) down to 0. We capture
+    snapshots at 0%, 10%, 20%, ..., 100% of progress through the loop.
+
+    Args:
+        number_of_steps: Total number of Euler steps (N).
+
+    Returns:
+        List of unique integer step indices at which to record intermediates.
+    """
+    intermediate_steps = []
+    for percentage in range(0, 101, 10):
+        # percentage=0 means the very start (step index N-1, pure noise)
+        # percentage=100 means the very end (step index 0, clean data)
+        step_index = int((number_of_steps - 1) * (1.0 - percentage / 100.0))
+        intermediate_steps.append(step_index)
+    # Remove duplicates while preserving order (can happen at small N)
+    seen = set()
+    unique_steps = []
+    for step in intermediate_steps:
+        if step not in seen:
+            seen.add(step)
+            unique_steps.append(step)
+    return unique_steps
+
+
 def compute_denoising_intermediate_steps_ddim(timestep_sequence):
     """Compute timestep indices at every 10% of the DDIM denoising process.
 
@@ -666,16 +831,18 @@ def write_generation_profile(
     ddim_steps=None,
     eta=None,
     total_timesteps=None,
+    rf_steps=None,
 ):
     """Write generation profiling information to a text file.
 
     Args:
         profile_path: Path to the output profile.txt file.
         per_sample_times: List of per-sample generation times in seconds.
-        mode: Sampling mode ('ddpm' or 'ddim').
+        mode: Sampling mode ('ddpm', 'ddim', or 'rf').
         ddim_steps: Number of DDIM steps (only for ddim mode).
         eta: DDIM eta parameter (only for ddim mode).
         total_timesteps: Total DDPM timesteps T.
+        rf_steps: Number of Rectified Flow Euler steps (only for rf mode).
     """
     total_time = sum(per_sample_times)
     average_time = total_time / len(per_sample_times) if per_sample_times else 0.0
@@ -691,6 +858,9 @@ def write_generation_profile(
         if mode == 'ddim':
             file.write(f"DDIM steps:          {ddim_steps}\n")
             file.write(f"DDIM eta:            {eta}\n")
+        if mode == 'rf':
+            file.write(f"Euler steps:         {rf_steps}\n")
+            file.write(f"Step size:           {1.0 / rf_steps:.6f}\n")
         if total_timesteps is not None:
             file.write(f"Total DDPM timesteps: {total_timesteps}\n")
         file.write(f"Number of samples:   {len(per_sample_times)}\n\n")
