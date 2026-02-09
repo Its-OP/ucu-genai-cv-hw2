@@ -446,14 +446,14 @@ def main():
         f"guidance_scale={args.guidance_scale}"
     )
 
-    # CUDA optimizations: compile the inner UNet (not the wrapper, which has
-    # control flow for conditioning dropout that torch.compile cannot handle)
+    # CUDA optimizations: compile the entire conditioned UNet so that
+    # save_checkpoint can unwrap it via the top-level _orig_mod attribute
     scaler = None
     if device.type == "cuda":
-        conditioned_unet.unet = torch.compile(conditioned_unet.unet)
+        conditioned_unet = torch.compile(conditioned_unet)
         scaler = torch.amp.GradScaler("cuda")
         print(
-            "CUDA optimizations enabled: torch.compile(inner UNet) "
+            "CUDA optimizations enabled: torch.compile(conditioned UNet) "
             "+ mixed precision (float16)"
         )
 
