@@ -10,3 +10,5 @@ distribution_plots/*
 figures/*
 **.tex
 **.bib
+issues/*
+debug_output/*

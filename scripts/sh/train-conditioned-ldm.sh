@@ -37,7 +37,7 @@ shift  # Remove checkpoint from args
 # Default configuration
 EPOCHS=100
 LEARNING_RATE="1e-3"
-BATCH_SIZE=512
+BATCH_SIZE=1024
 TIMESTEPS=1000
 BASE_CHANNELS=64
 SAMPLE_EVERY=20
