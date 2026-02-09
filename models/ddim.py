@@ -230,7 +230,10 @@ class DDIMSampler(nn.Module):
             If return_intermediates=True, returns (samples, intermediates) where
             intermediates is a list of (timestep, tensor) tuples.
         """
-        device = self.timestep_sequence.device
+        # Use the DDPM's device (which is already on the correct device after .to())
+        # rather than self.timestep_sequence.device, because the DDIMSampler's own
+        # buffer may still be on CPU if .to(device) wasn't called on the sampler.
+        device = self.ddpm.betas.device
         batch_size = shape[0]
 
         # Build the reversed sequence of timestep pairs: (current, previous)
@@ -238,7 +241,7 @@ class DDIMSampler(nn.Module):
         #   reversed: [980, 960, ..., 20, 0]
         #   pairs: (980, 960), (960, 940), ..., (20, 0), (0, -1)
         # The sentinel -1 means "step to clean image" (ᾱ_{-1} = 1.0)
-        reversed_sequence = torch.flip(self.timestep_sequence, [0])
+        reversed_sequence = torch.flip(self.timestep_sequence.to(device), [0])
 
         # Default intermediate steps: evenly spaced through the DDIM sequence
         if intermediate_steps is None:
