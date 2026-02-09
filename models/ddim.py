@@ -204,6 +204,7 @@ class DDIMSampler(nn.Module):
         return_intermediates: bool = False,
         intermediate_steps: list = None,
         clip_denoised: bool = True,
+        initial_noise: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Full DDIM reverse diffusion: generate images from pure noise.
@@ -224,6 +225,10 @@ class DDIMSampler(nn.Module):
                                Defaults to evenly-spaced steps through the DDIM sequence.
             clip_denoised: If True, clip predicted x̂₀ to [-1, 1] at each reverse step.
                 Set to False for latent-space diffusion.
+            initial_noise: Optional pre-generated noise tensor of shape ``shape``.
+                If provided, used as the starting point x_{τ_S} instead of
+                sampling fresh noise. Useful for comparing different model
+                configurations (e.g., guidance scales) from identical starting noise.
 
         Returns:
             Generated samples tensor of the requested shape.
@@ -252,7 +257,11 @@ class DDIMSampler(nn.Module):
             intermediate_steps = [reversed_sequence[idx].item() for idx in intermediate_indices]
 
         # Start from pure noise: x_{τ_S} ~ N(0, I)
-        image = torch.randn(shape, device=device)
+        # If initial_noise is provided, use it instead of sampling fresh noise.
+        if initial_noise is not None:
+            image = initial_noise.to(device)
+        else:
+            image = torch.randn(shape, device=device)
         intermediates = []
 
         for step_index in tqdm(
