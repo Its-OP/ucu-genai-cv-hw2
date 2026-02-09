@@ -10,6 +10,7 @@ Custom PyTorch implementations of DDPM, DDIM, VAE, and Latent Diffusion Models f
 | **DDIM** | Faster sampling via implicit models (50 steps vs 1000) | Song et al. 2020 |
 | **VAE** | Variational Autoencoder (compresses 1x32x32 to 2x4x4) | Kingma & Welling 2013 |
 | **LDM** | Latent Diffusion: trains DDPM in VAE's latent space | Rombach et al. 2022 |
+| **Conditioned LDM** | Class-conditioned LDM with classifier-free guidance | Ho & Salimans 2022 |
 
 ## Setup
 
@@ -79,6 +80,29 @@ bash scripts/sh/train-latent-diffusion.sh path/to/vae_checkpoint.pt [OPTIONS]
 #   --sample_every N        (default: 10)
 ```
 
+### Conditioned Latent Diffusion Model
+
+Requires a pre-trained VAE checkpoint. Adds class conditioning via input channel concatenation with classifier-free guidance (CFG):
+
+```bash
+bash scripts/sh/train-conditioned-ldm.sh path/to/vae_checkpoint.pt [OPTIONS]
+
+# Options:
+#   --epochs N                      (default: 100)
+#   --lr RATE                       (default: 1e-3)
+#   --timesteps N                   (default: 1000)
+#   --base_channels N               (default: 64)
+#   --sample_every N                (default: 10)
+#   --guidance_scale FLOAT          (default: 3.0)
+#   --unconditional_probability FLOAT (default: 0.1)
+```
+
+Or directly:
+```bash
+python -m scripts.python.train_conditioned_latent_diffusion \
+    --vae_checkpoint path/to/vae.pt --epochs 100 --guidance_scale 3.0
+```
+
 ## Generation
 
 ### DDPM / DDIM samples
@@ -101,6 +125,18 @@ bash scripts/sh/generate-ldm.sh path/to/vae.pt path/to/unet.pt
 
 # DDIM sampling in latent space
 bash scripts/sh/generate-ldm.sh path/to/vae.pt path/to/unet.pt --mode ddim --ddim_steps 50
+```
+
+### Conditioned Latent Diffusion samples
+
+```bash
+# Generate one sample per class (0-9)
+bash scripts/sh/generate-conditioned-ldm.sh path/to/vae.pt path/to/cond_unet.pt
+
+# Generate specific digit class
+bash scripts/sh/generate-conditioned-ldm.sh path/to/vae.pt path/to/cond_unet.pt --class_label 7
+
+# Options: --guidance_scale FLOAT, --num_samples N, --mode ddim, --ddim_steps N
 ```
 
 ### UMAP distribution visualization
@@ -138,25 +174,28 @@ Generation scripts output to `generated_samples/` with per-sample subfolders con
 python -m pytest tests/ -v
 ```
 
-103 tests covering UNet, DDPM, DDIM, and VAE (output shapes, gradient flow, numerical stability, determinism, various configurations).
+Tests covering UNet, DDPM, DDIM, VAE, and classifier-free guidance (output shapes, gradient flow, numerical stability, determinism, CFG formula, various configurations).
 
 ## Project Structure
 
 ```
 models/
-  ddpm.py           # DDPM forward/reverse diffusion (cosine schedule)
-  ddim.py           # DDIM sampler (reuses DDPM's noise network)
-  unet.py           # UNet with timestep conditioning and self-attention
-  vae.py            # VAE encoder/decoder with diagonal Gaussian posterior
-  utils.py          # Shared utilities: EMA, checkpointing, visualization
+  ddpm.py                       # DDPM forward/reverse diffusion (cosine schedule)
+  ddim.py                       # DDIM sampler (reuses DDPM's noise network)
+  unet.py                       # UNet with timestep conditioning and self-attention
+  vae.py                        # VAE encoder/decoder with diagonal Gaussian posterior
+  classifier_free_guidance.py   # CFG wrappers for class-conditioned generation
+  utils.py                      # Shared utilities: EMA, checkpointing, visualization
 
 scripts/
   python/           # Training and generation scripts
     train_ddpm.py
     train_vae.py
     train_latent_diffusion.py
+    train_conditioned_latent_diffusion.py
     generate_ddpm.py
     generate_latent_diffusion.py
+    generate_conditioned_latent_diffusion.py
     visualize_distribution.py
   sh/               # Shell wrappers (screen sessions, GPU monitoring)
 

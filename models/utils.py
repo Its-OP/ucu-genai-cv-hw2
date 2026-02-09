@@ -175,15 +175,20 @@ def save_checkpoint(model, checkpoint_path, config, epoch, train_loss, eval_loss
 def load_unet_checkpoint(checkpoint_path, device):
     """Load a UNet + DDPM checkpoint and reconstruct the models.
 
-    Handles both pixel-space DDPM checkpoints and latent-space UNet
-    checkpoints (they share the same checkpoint format).
+    Handles pixel-space DDPM checkpoints, latent-space UNet checkpoints,
+    and class-conditioned latent-space checkpoints (detected via the
+    ``conditioned`` flag in the saved config).
+
+    For conditioned checkpoints, reconstructs a ClassConditionedUNet that
+    wraps the UNet with a learnable class embedding.
 
     Args:
         checkpoint_path: Path to the .pt checkpoint file.
         device: Device to load the model onto.
 
     Returns:
-        Tuple of (unet, ddpm, config) ready for generation.
+        Tuple of (model, ddpm, config) ready for generation.
+        ``model`` is either a bare UNet or a ClassConditionedUNet.
     """
     from models.unet import UNet
     from models.ddpm import DDPM
@@ -203,26 +208,70 @@ def load_unet_checkpoint(checkpoint_path, device):
     layers_per_block = config.get('layers_per_block', 2)
     attention_levels = tuple(config.get('attention_levels', (False, False, True, True)))
 
-    # Reconstruct model architecture from saved config
-    unet = UNet(
-        image_channels=config['image_channels'],
-        base_channels=config['base_channels'],
-        channel_multipliers=channel_multipliers,
-        layers_per_block=layers_per_block,
-        attention_levels=attention_levels,
-    ).to(device)
+    is_conditioned = config.get('conditioned', False)
 
-    # Load EMA weights
-    unet.load_state_dict(checkpoint['model_state_dict'])
-    unet.eval()
+    if is_conditioned:
+        # Conditioned checkpoint: reconstruct ClassConditionedUNet
+        from models.classifier_free_guidance import ClassConditionedUNet
 
-    number_of_parameters = sum(parameter.numel() for parameter in unet.parameters())
-    print(f"  UNet parameters: {number_of_parameters:,}")
+        number_of_classes = config['number_of_classes']
+        output_channels = config['output_channels']
+        spatial_height = config.get('spatial_height', 4)
+        spatial_width = config.get('spatial_width', 4)
+
+        print(f"  Conditioned model: {number_of_classes} classes, "
+              f"output_channels={output_channels}")
+
+        unet = UNet(
+            image_channels=config['image_channels'],
+            output_channels=output_channels,
+            base_channels=config['base_channels'],
+            channel_multipliers=channel_multipliers,
+            layers_per_block=layers_per_block,
+            attention_levels=attention_levels,
+        ).to(device)
+
+        model = ClassConditionedUNet(
+            unet=unet,
+            number_of_classes=number_of_classes,
+            spatial_height=spatial_height,
+            spatial_width=spatial_width,
+            unconditional_probability=0.0,  # No dropout during generation
+        ).to(device)
+
+        # Load full state dict (UNet weights + class embedding weights)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.eval()
+
+        number_of_parameters = sum(
+            parameter.numel() for parameter in model.parameters()
+        )
+        print(f"  ClassConditionedUNet parameters: {number_of_parameters:,}")
+
+    else:
+        # Unconditioned checkpoint: reconstruct bare UNet
+        unet = UNet(
+            image_channels=config['image_channels'],
+            base_channels=config['base_channels'],
+            channel_multipliers=channel_multipliers,
+            layers_per_block=layers_per_block,
+            attention_levels=attention_levels,
+        ).to(device)
+
+        # Load EMA weights
+        unet.load_state_dict(checkpoint['model_state_dict'])
+        unet.eval()
+
+        number_of_parameters = sum(
+            parameter.numel() for parameter in unet.parameters()
+        )
+        print(f"  UNet parameters: {number_of_parameters:,}")
+        model = unet
 
     # Reconstruct DDPM diffusion scheduler
     ddpm = DDPM(timesteps=config['timesteps']).to(device)
 
-    return unet, ddpm, config
+    return model, ddpm, config
 
 
 def load_vae_checkpoint(checkpoint_path, device):

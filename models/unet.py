@@ -802,7 +802,11 @@ class UNet(nn.Module):
         - Sinusoidal timestep embeddings
 
     Args:
-        image_channels (int): Number of input/output image channels. Default: 1 (grayscale).
+        image_channels (int): Number of input image channels. Default: 1 (grayscale).
+        output_channels (int or None): Number of output image channels. If None, defaults
+                             to image_channels (symmetric input/output). Set explicitly when
+                             input has extra conditioning channels (e.g., class-conditioned
+                             diffusion where input_channels = latent_channels + 1).
         base_channels (int): Base channel count, multiplied by each entry in channel_multipliers.
                              Default: 32.
         channel_multipliers (tuple[int]): Per-level channel multipliers applied to base_channels.
@@ -818,6 +822,7 @@ class UNet(nn.Module):
     def __init__(
         self,
         image_channels=1,
+        output_channels=None,
         base_channels=32,
         channel_multipliers=(1, 2, 3, 3),
         layers_per_block=1,
@@ -826,6 +831,7 @@ class UNet(nn.Module):
     ):
         super().__init__()
         self.image_channels = image_channels
+        self.output_channels = output_channels if output_channels is not None else image_channels
 
         # Compute per-level channel counts: base_channels * multiplier for each level
         block_output_channels = tuple(
@@ -835,7 +841,7 @@ class UNet(nn.Module):
         self.model = UNet2DModel(
             sample_size=32,
             input_channels=image_channels,
-            output_channels=image_channels,
+            output_channels=self.output_channels,
             block_output_channels=block_output_channels,
             layers_per_block=layers_per_block,
             attention_levels=attention_levels,

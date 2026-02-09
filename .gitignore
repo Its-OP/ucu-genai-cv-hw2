@@ -8,4 +8,5 @@ experiments/*
 generated_samples/*
 distribution_plots/*
 figures/*
-*.tex
+**.tex
+**.bib
