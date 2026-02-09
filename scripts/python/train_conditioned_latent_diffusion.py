@@ -341,11 +341,10 @@ def generate_conditioned_samples(
         label_tensor = torch.tensor([class_label], device=device)
         conditioned_unet.set_class_labels(label_tensor)
 
-        # Generate in latent space with CFG using DDIM.
-        # clip_denoised=True (default) prevents the x₀ reconstruction
-        # amplification cascade at late timesteps.
+        # Generate in latent space with CFG using DDIM
+        # clip_denoised=False because latent values are not bounded to [-1, 1]
         latent_sample = ddim_sampler.ddim_sample_loop(
-            cfg_wrapper, latent_shape,
+            cfg_wrapper, latent_shape, clip_denoised=False,
         )
 
         # Unscale and decode to pixel space

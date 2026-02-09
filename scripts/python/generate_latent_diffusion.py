@@ -252,16 +252,14 @@ def main():
         # Time the generation
         sample_start_time = time.time()
 
-        # clip_denoised=True (default) prevents the x₀ reconstruction
-        # amplification cascade at late timesteps of the cosine schedule.
-        # Scaled latents have approximately unit variance, so the default
-        # clip_sample_range=1.0 is appropriate.
+        # clip_denoised=False because latent values are not bounded to [-1, 1]
         if args.mode == "ddim":
             latent_sample, intermediates = ddim_sampler.ddim_sample_loop(
                 unet,
                 single_latent_shape,
                 return_intermediates=True,
                 intermediate_steps=intermediate_steps,
+                clip_denoised=False,
             )
         else:
             latent_sample, intermediates = ddpm.p_sample_loop(
@@ -269,6 +267,7 @@ def main():
                 single_latent_shape,
                 return_intermediates=True,
                 intermediate_steps=intermediate_steps,
+                clip_denoised=False,
             )
 
         sample_elapsed_time = time.time() - sample_start_time

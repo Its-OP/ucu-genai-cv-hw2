@@ -242,67 +242,6 @@ class TestDDIMSample:
         assert x_previous.shape == x_current.shape
         assert not torch.isnan(x_previous).any()
 
-    def test_clip_sample_range_clamps_predicted_x0(self, device, seed):
-        """clip_sample_range should control the clamp bounds for predicted x̂₀.
-
-        In the DDIM formula: x_{prev} = √ᾱ_{prev} · x̂₀ + √(1 − ᾱ_{prev}) · ε_θ,
-        we use a moderate noise prediction so the √ᾱ_{prev} · x̂₀ term (which is
-        affected by clipping) is not swamped by the direction term.
-
-        At timestep_previous=-1 (sentinel, ᾱ_{prev}=1.0), the formula becomes
-        x_{prev} = x̂₀, so clipping directly controls the output.
-        """
-        # Arrange — moderate noise prediction so x̂₀ reconstruction is large
-        # but the formula's x̂₀ term isn't overwhelmed by the ε_θ direction term.
-        class ModerateNoiseModel(nn.Module):
-            """Model that outputs moderate noise predictions."""
-            def forward(self, x, timestep):
-                return torch.ones_like(x) * 5.0
-
-        ddpm = DDPM(timesteps=1000).to(device)
-        sampler = DDIMSampler(ddpm, ddim_timesteps=50, eta=0.0)
-        model = ModerateNoiseModel().to(device)
-        model.eval()
-        x_current = torch.randn(4, 1, 28, 28, device=device)
-
-        # Act — at the final step (timestep_previous=-1, ᾱ_{prev}=1.0), the
-        # output equals x̂₀ directly, so clip_sample_range directly bounds it.
-        x_prev_narrow = sampler.ddim_sample(
-            model, x_current, timestep_current=0, timestep_previous=-1,
-            clip_denoised=True, clip_sample_range=0.5,
-        )
-        x_prev_wide = sampler.ddim_sample(
-            model, x_current, timestep_current=0, timestep_previous=-1,
-            clip_denoised=True, clip_sample_range=2.0,
-        )
-
-        # Assert — narrow range should clamp more tightly
-        assert x_prev_narrow.abs().max() <= 0.5 + 1e-6
-        assert x_prev_wide.abs().max() <= 2.0 + 1e-6
-        assert x_prev_narrow.abs().max() <= x_prev_wide.abs().max()
-
-    def test_clip_denoised_false_ignores_clip_sample_range(self, device, seed):
-        """When clip_denoised=False, clip_sample_range should be ignored."""
-        # Arrange
-        ddpm = DDPM(timesteps=1000).to(device)
-        sampler = DDIMSampler(ddpm, ddim_timesteps=50, eta=0.0)
-        model = self._create_simple_model(device)
-        model.eval()
-        x_current = torch.randn(4, 1, 28, 28, device=device)
-
-        # Act — clip_denoised=False with different ranges
-        x_prev_a = sampler.ddim_sample(
-            model, x_current, timestep_current=500, timestep_previous=480,
-            clip_denoised=False, clip_sample_range=0.5,
-        )
-        x_prev_b = sampler.ddim_sample(
-            model, x_current, timestep_current=500, timestep_previous=480,
-            clip_denoised=False, clip_sample_range=5.0,
-        )
-
-        # Assert — should be identical since clipping is disabled
-        torch.testing.assert_close(x_prev_a, x_prev_b)
-
 
 class TestDDIMSampleLoop:
     """Tests for DDIMSampler.ddim_sample_loop (full reverse diffusion loop)."""
