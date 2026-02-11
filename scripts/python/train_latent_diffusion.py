@@ -1,18 +1,5 @@
 """
 Latent Diffusion Model Training Script for MNIST.
-
-Trains a UNet denoising model within the latent space of a pre-trained
-frozen VAE (Rombach et al. 2022 — Latent Diffusion Models).
-
-Pipeline:
-    1. Load frozen VAE from checkpoint (no gradients)
-    2. Encode training images to latent space: x -> z ~ q(z|x)
-    3. Add noise to latent at random timestep: z_t = sqrt(alpha_bar_t) * z + sqrt(1-alpha_bar_t) * epsilon
-    4. UNet predicts noise from z_t: epsilon_theta(z_t, t)
-    5. Loss = MSE(epsilon, epsilon_theta)
-
-Usage:
-    python -m scripts.python.train_latent_diffusion --vae_checkpoint path/to/vae.pt --epochs 100
 """
 import argparse
 import time

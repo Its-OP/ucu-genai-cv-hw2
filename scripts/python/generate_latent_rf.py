@@ -1,28 +1,5 @@
 """
 Latent Rectified Flow Sample Generation Script.
-
-Loads a trained latent UNet checkpoint (Rectified Flow) and a pre-trained
-VAE checkpoint, generates MNIST digit samples by Euler ODE integration
-in latent space, then decoding to pixel space via the VAE decoder.
-
-Pipeline:
-    1. Sample noise in latent space: z_1 ~ N(0, I), shape (1, latent_channels, 4, 4)
-    2. Euler integration from t=1 to t=0: z_1 -> z_0_scaled
-    3. Unscale latents: z_0 = z_0_scaled / scaling_factor
-    4. Decode to pixel space: x_hat = VAE.decode(z_0), shape (1, 1, 32, 32)
-    5. Crop back to 28x28
-
-Each sample is generated individually with per-sample timing, denoising
-step visualization, and dedicated subfolders.
-
-Usage:
-    python -m scripts.python.generate_latent_rf \\
-        --vae_checkpoint path/to/vae.pt \\
-        --unet_checkpoint path/to/unet.pt
-    python -m scripts.python.generate_latent_rf \\
-        --vae_checkpoint path/to/vae.pt \\
-        --unet_checkpoint path/to/unet.pt \\
-        --sampling_steps 100
 """
 import argparse
 import os

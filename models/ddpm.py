@@ -48,13 +48,11 @@ class DDPM(nn.Module):
         # ᾱ_{t-1}
         alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value=1.0)
 
-        # Register as buffers (will move to device with model)
         self.register_buffer('betas', betas)
         self.register_buffer('alphas', alphas)
         self.register_buffer('alphas_cumprod', alphas_cumprod)
         self.register_buffer('alphas_cumprod_prev', alphas_cumprod_prev)
 
-        # Precomputed values for q(x_t | x_0)
         self.register_buffer('sqrt_alphas_cumprod', torch.sqrt(alphas_cumprod))
         self.register_buffer('sqrt_one_minus_alphas_cumprod', torch.sqrt(1.0 - alphas_cumprod))
 

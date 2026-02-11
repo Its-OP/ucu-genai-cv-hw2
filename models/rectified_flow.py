@@ -1,31 +1,3 @@
-"""
-Rectified Flow for diffusion models.
-
-Implements the Rectified Flow framework from Liu et al. 2022:
-    "Flow Straight and Fast: Learning to Generate and Transfer Data
-     with Rectified Flows" (arXiv:2209.03003)
-
-Replaces the DDPM noise schedule with a simpler linear interpolation
-between data and noise, and predicts the velocity (flow) rather than
-the noise itself.
-
-Key formulas:
-    Forward interpolation:
-        x_t = (1 - t) * x_0 + t * epsilon,  where t in [0, 1]
-
-    Target velocity:
-        v = epsilon - x_0
-
-    Training loss:
-        L = E_{t, x_0, epsilon}[|| v_theta(x_t, t) - v ||^2]
-
-    Euler sampling (reverse ODE integration):
-        x_{t - dt} = x_t - dt * v_theta(x_t, t)
-        from t=1 (pure noise) to t=0 (clean data)
-
-Components:
-    1. RectifiedFlow  — training loss + Euler sampling loop
-"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -40,24 +12,6 @@ TIMESTEP_SCALE = 999.0
 
 
 class RectifiedFlow(nn.Module):
-    """
-    Rectified Flow framework for training and sampling diffusion models.
-
-    Unlike DDPM, Rectified Flow uses:
-        - Linear interpolation between data and noise (no noise schedule)
-        - Velocity prediction (v = noise - x_0) instead of noise prediction
-        - Euler ODE integration for sampling (no posterior variance needed)
-        - Continuous time t in [0, 1] instead of discrete timestep indices
-
-    The same UNet architecture used for DDPM can be reused: only the
-    loss function and sampling procedure differ.
-
-    Args:
-        number_of_sampling_steps: Default number of Euler steps for
-            sampling. Can be overridden per call in euler_sample_loop().
-            Typical values: 20–100. Default: 50.
-    """
-
     def __init__(self, number_of_sampling_steps: int = 50):
         super().__init__()
         self.number_of_sampling_steps = number_of_sampling_steps
@@ -97,7 +51,6 @@ class RectifiedFlow(nn.Module):
         Returns:
             Interpolated samples x_t, same shape as x_0.
         """
-        # Reshape t for broadcasting: (batch_size,) -> (batch_size, 1, 1, 1)
         t_reshaped = t[:, None, None, None]
 
         # x_t = (1 - t) * x_0 + t * noise

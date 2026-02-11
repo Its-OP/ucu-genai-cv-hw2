@@ -1,18 +1,5 @@
 """
-Diffusion Model Sample Generation Script (DDPM / DDIM).
-
-Loads a trained checkpoint and generates MNIST digit samples using either
-DDPM (Ho et al. 2020) or DDIM (Song et al. 2020) sampling.
-
-Each sample is generated individually with per-sample timing, denoising
-step visualization (at every 10% of the process), and dedicated subfolders.
-Output directories are timestamped to avoid overwriting previous runs.
-
-Usage:
-    python -m scripts.python.generate_ddpm --checkpoint path/to/checkpoint.pt
-    python -m scripts.python.generate_ddpm --checkpoint path/to/checkpoint.pt --mode ddim --ddim_steps 50
-    python -m scripts.python.generate_ddpm --checkpoint path/to/checkpoint.pt --mode ddim --ddim_steps 100 --eta 0.5
-    python -m scripts.python.generate_ddpm --checkpoint path/to/checkpoint.pt --num_samples 25 --nrow 5
+Diffusion Model Sample Generation Script (DDPM / DDIM)
 """
 import argparse
 import os

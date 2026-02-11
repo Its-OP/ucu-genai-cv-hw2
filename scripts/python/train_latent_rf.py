@@ -1,19 +1,5 @@
 """
 Latent Rectified Flow Training Script for MNIST.
-
-Trains a UNet velocity prediction model within the latent space of a
-pre-trained frozen VAE using the Rectified Flow framework (Liu et al. 2022).
-
-Pipeline:
-    1. Load frozen VAE from checkpoint (no gradients)
-    2. Encode training images to latent space: x -> z = Enc(x)
-    3. Sample continuous time t in [0, 1] and noise epsilon ~ N(0, I)
-    4. Interpolate: z_t = (1 - t) * z_0 + t * epsilon
-    5. UNet predicts velocity: v_theta(z_t, t)
-    6. Loss = MSE(v_theta, epsilon - z_0)
-
-Usage:
-    python -m scripts.python.train_latent_rf --vae_checkpoint path/to/vae.pt --epochs 100
 """
 import argparse
 import time

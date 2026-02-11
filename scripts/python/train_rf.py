@@ -1,18 +1,5 @@
 """
 Rectified Flow Training Script for MNIST (pixel space).
-
-Trains a UNet velocity prediction model using the Rectified Flow framework
-(Liu et al. 2022, "Flow Straight and Fast") on MNIST digits.
-
-Unlike DDPM which predicts noise, Rectified Flow:
-    - Uses linear interpolation: x_t = (1 - t) * x_0 + t * noise
-    - Predicts velocity: v = noise - x_0
-    - Trains with continuous time t in [0, 1]
-    - Samples via Euler ODE integration (fewer steps needed)
-
-Usage:
-    python -m scripts.python.train_rf --epochs 100 --lr 1e-3
-    python -m scripts.python.train_rf --epochs 100 --sampling_steps 50
 """
 import argparse
 import time

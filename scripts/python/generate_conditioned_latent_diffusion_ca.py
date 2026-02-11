@@ -1,35 +1,5 @@
 """
 Cross-Attention Class-Conditioned Latent Diffusion Model Sample Generation Script (DDIM).
-
-Loads a trained cross-attention class-conditioned latent UNet checkpoint and a
-pre-trained VAE checkpoint, then generates MNIST digit samples for specific
-classes using classifier-free guidance (Ho & Salimans 2022).
-
-Unlike the channel-concatenation generation script, this loads a
-CrossAttentionConditionedUNet where class conditioning enters via
-cross-attention layers inside the UNet rather than through input channel
-concatenation.
-
-Sampling uses DDIM (Song et al. 2021) with a strided timestep schedule and
-η=0.05 for slight stochasticity.
-
-Pipeline per sample:
-    1. Set target class label on the conditioned UNet
-    2. Sample noise in latent space: z_T ~ N(0, I), shape (1, latent_channels, 4, 4)
-    3. Denoise via DDIM with CFG: z_T -> z_0
-    4. Decode latent to pixel space: x_hat = VAE.decode(z_0), shape (1, 1, 32, 32)
-    5. Crop back to 28x28: remove the 2-pixel reflect padding
-
-Usage:
-    python -m scripts.python.generate_conditioned_latent_diffusion_ca \
-        --vae_checkpoint path/to/vae.pt \
-        --unet_checkpoint path/to/conditioned_unet_ca.pt \
-        --class_label 7 --guidance_scale 3.0
-
-    # Generate one sample per class (0-9) if --class_label is not specified:
-    python -m scripts.python.generate_conditioned_latent_diffusion_ca \
-        --vae_checkpoint path/to/vae.pt \
-        --unet_checkpoint path/to/conditioned_unet_ca.pt
 """
 import argparse
 import os

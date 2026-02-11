@@ -1,32 +1,3 @@
-"""
-Classifier-Free Guidance (CFG) for class-conditioned latent diffusion.
-
-Implements two conditioning approaches for Ho & Salimans 2022:
-    "Classifier-Free Diffusion Guidance" (arXiv:2207.12598)
-
-1. Channel concatenation (ClassConditionedUNet):
-   The class label is encoded via a learnable embedding into a single-channel
-   spatial map and concatenated to the noisy latent before the UNet processes it.
-
-2. Cross-attention (CrossAttentionConditionedUNet):
-   The class label is embedded as a dense vector and injected into the UNet
-   via cross-attention layers (Rombach et al. 2022, "Latent Diffusion Models").
-   Queries come from UNet features, keys/values from the class embedding.
-
-During sampling, the CFG formula steers generation toward the target class:
-
-    ε_guided = ε_uncond + w × (ε_cond − ε_uncond)
-
-where w is the guidance scale.
-
-Components:
-    1. ClassConditionedUNet  — training-time wrapper using channel concatenation
-    2. CrossAttentionConditionedUNet — training-time wrapper using cross-attention
-    3. ClassifierFreeGuidanceWrapper — sampling-time wrapper that performs
-       dual forward passes (conditional + unconditional) and applies CFG
-    4. create_conditioned_unet — factory for channel-concat conditioned UNet
-    5. create_cross_attention_conditioned_unet — factory for cross-attention conditioned UNet
-"""
 import torch
 import torch.nn as nn
 
@@ -108,12 +79,6 @@ class ClassConditionedUNet(nn.Module):
         If class labels are set, looks up the corresponding embedding and
         optionally applies unconditional dropout during training. If no labels
         are set, returns the unconditional embedding for all samples.
-
-        Classifier-free dropout (Ho & Salimans 2022):
-            During training, each sample in the batch independently has its
-            class conditioning replaced with the unconditional token (index 0)
-            with probability ``unconditional_probability``. This teaches the
-            model to predict noise both with and without class information.
 
         Args:
             batch_size: Number of samples in the batch.
@@ -205,11 +170,6 @@ class ClassifierFreeGuidanceWrapper(nn.Module):
 
     def forward(self, x: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
         """
-        Apply classifier-free guidance.
-
-        Formula (Ho & Salimans 2022):
-            ε_guided = ε_uncond + w × (ε_cond − ε_uncond)
-
         Two forward passes are performed:
             1. Conditional: uses the class labels stored in conditioned_unet
             2. Unconditional: temporarily sets labels to None (index 0)
@@ -310,19 +270,6 @@ class CrossAttentionConditionedUNet(nn.Module):
     """
     Wrapper that adds class conditioning to a UNet via cross-attention.
 
-    Encodes each class label as a dense embedding vector using nn.Embedding,
-    then passes it as a single-token context sequence to the UNet's
-    cross-attention layers. This follows the conditioning approach from
-    Rombach et al. 2022 ("Latent Diffusion Models"), where:
-
-        Q = W_q · features,  K = W_k · context,  V = W_v · context
-        Attention(Q, K, V) = softmax(Q K^T / sqrt(d_k)) V
-
-    The embedding table has ``number_of_classes + 1`` entries:
-        - Index 0: unconditional token (used during classifier-free dropout
-          and for unconditional generation)
-        - Indices 1 .. number_of_classes: class tokens (digit 0 -> index 1, etc.)
-
     Unlike ClassConditionedUNet (channel concatenation), this approach does NOT
     add extra input channels. The UNet's input and output channel counts both
     equal latent_channels. Conditioning enters via cross-attention inside the
@@ -382,12 +329,6 @@ class CrossAttentionConditionedUNet(nn.Module):
         If class labels are set, looks up the corresponding embedding and
         optionally applies unconditional dropout during training. If no labels
         are set, returns the unconditional embedding for all samples.
-
-        Classifier-free dropout (Ho & Salimans 2022):
-            During training, each sample in the batch independently has its
-            class conditioning replaced with the unconditional token (index 0)
-            with probability ``unconditional_probability``. This teaches the
-            model to predict noise both with and without class information.
 
         Args:
             batch_size: Number of samples in the batch.

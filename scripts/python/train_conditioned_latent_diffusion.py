@@ -1,22 +1,5 @@
 """
 Class-Conditioned Latent Diffusion Model Training Script for MNIST.
-
-Trains a UNet denoising model within the latent space of a pre-trained
-frozen VAE, with class conditioning via input channel concatenation and
-classifier-free guidance (Ho & Salimans 2022).
-
-Pipeline:
-    1. Load frozen VAE from checkpoint (no gradients)
-    2. Encode training images to latent space: x -> z ~ q(z|x)
-    3. Build class conditioning map via learnable embedding: label -> (1, H, W)
-    4. Concatenate conditioning to noisy latent: (C+1, H, W)
-    5. UNet predicts noise from conditioned input: epsilon_theta(z_t || c, t)
-    6. Loss = MSE(epsilon, epsilon_theta)
-    7. Classifier-free dropout: randomly drop conditioning for 10% of samples
-
-Usage:
-    python -m scripts.python.train_conditioned_latent_diffusion \
-        --vae_checkpoint path/to/vae.pt --epochs 100
 """
 import argparse
 import time

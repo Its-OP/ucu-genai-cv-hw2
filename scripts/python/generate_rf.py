@@ -1,17 +1,5 @@
 """
 Rectified Flow Sample Generation Script (pixel space).
-
-Loads a trained Rectified Flow checkpoint and generates MNIST digit samples
-using Euler ODE integration (Liu et al. 2022).
-
-Each sample is generated individually with per-sample timing, denoising
-step visualization (at every 10% of the process), and dedicated subfolders.
-Output directories are timestamped to avoid overwriting previous runs.
-
-Usage:
-    python -m scripts.python.generate_rf --checkpoint path/to/checkpoint.pt
-    python -m scripts.python.generate_rf --checkpoint path/to/checkpoint.pt --sampling_steps 100
-    python -m scripts.python.generate_rf --checkpoint path/to/checkpoint.pt --num_samples 25 --nrow 5
 """
 import argparse
 import os

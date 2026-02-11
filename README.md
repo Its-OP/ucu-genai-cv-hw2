@@ -10,7 +10,9 @@ Custom PyTorch implementations of DDPM, DDIM, VAE, and Latent Diffusion Models f
 | **DDIM** | Faster sampling via implicit models (50 steps vs 1000) | Song et al. 2020 |
 | **VAE** | Variational Autoencoder (compresses 1x32x32 to 2x4x4) | Kingma & Welling 2013 |
 | **LDM** | Latent Diffusion: trains DDPM in VAE's latent space | Rombach et al. 2022 |
-| **Conditioned LDM** | Class-conditioned LDM with classifier-free guidance | Ho & Salimans 2022 |
+| **Conditioned LDM** | Class-conditioned LDM with classifier-free guidance (channel concat) | Ho & Salimans 2022 |
+| **Conditioned LDM (Cross-Attention)** | Class-conditioned LDM with cross-attention conditioning | Rombach et al. 2022 |
+| **Rectified Flow** | Flow matching with linear interpolation and velocity prediction (pixel/latent space) | Liu et al. 2022 |
 
 ## Setup
 
@@ -103,6 +105,68 @@ python -m scripts.python.train_conditioned_latent_diffusion \
     --vae_checkpoint path/to/vae.pt --epochs 100 --guidance_scale 3.0
 ```
 
+### Conditioned LDM with Cross-Attention
+
+Same as above but uses cross-attention conditioning instead of channel concatenation. Class labels are embedded as dense vectors and injected into the UNet via cross-attention layers:
+
+```bash
+bash scripts/sh/train-conditioned-ldm-ca.sh path/to/vae_checkpoint.pt [OPTIONS]
+
+# Options (same as conditioned LDM, plus):
+#   --cross_attention_dim N         (default: 128)
+```
+
+Or directly:
+```bash
+python -m scripts.python.train_conditioned_latent_diffusion_ca \
+    --vae_checkpoint path/to/vae.pt --epochs 100 --cross_attention_dim 128
+```
+
+### Rectified Flow (pixel-space)
+
+Trains a UNet with velocity prediction using linear interpolation (Liu et al. 2022). Uses the same UNet architecture as DDPM but with a different loss and sampling procedure. Supports logit-normal time sampling (Esser et al. 2024) for improved training:
+
+```bash
+bash scripts/sh/train-rf.sh [OPTIONS]
+
+# Options:
+#   --epochs N              (default: 100)
+#   --lr RATE               (default: 1e-3)
+#   --batch_size N          (default: 512)
+#   --sampling_steps N      (default: 50)
+#   --base_channels N       (default: 32)
+#   --sample_every N        (default: 10)
+#   --time_sampling STR     uniform or logit_normal (default: logit_normal)
+```
+
+Or directly:
+```bash
+python -m scripts.python.train_rf --epochs 100 --sampling_steps 50
+python -m scripts.python.train_rf --epochs 100 --time_sampling logit_normal
+```
+
+### Latent Rectified Flow
+
+Trains a Rectified Flow model in the VAE's latent space. Requires a pre-trained VAE checkpoint:
+
+```bash
+bash scripts/sh/train-latent-rf.sh path/to/vae_checkpoint.pt [OPTIONS]
+
+# Options:
+#   --epochs N              (default: 100)
+#   --lr RATE               (default: 1e-3)
+#   --sampling_steps N      (default: 50)
+#   --base_channels N       (default: 64)
+#   --sample_every N        (default: 10)
+#   --time_sampling STR     uniform or logit_normal (default: logit_normal)
+```
+
+Or directly:
+```bash
+python -m scripts.python.train_latent_rf \
+    --vae_checkpoint path/to/vae.pt --epochs 100 --time_sampling logit_normal
+```
+
 ## Generation
 
 ### DDPM / DDIM samples
@@ -127,7 +191,7 @@ bash scripts/sh/generate-ldm.sh path/to/vae.pt path/to/unet.pt
 bash scripts/sh/generate-ldm.sh path/to/vae.pt path/to/unet.pt --mode ddim --ddim_steps 50
 ```
 
-### Conditioned Latent Diffusion samples
+### Conditioned Latent Diffusion samples (channel concat)
 
 ```bash
 # Generate one sample per class (0-9)
@@ -136,7 +200,80 @@ bash scripts/sh/generate-conditioned-ldm.sh path/to/vae.pt path/to/cond_unet.pt
 # Generate specific digit class
 bash scripts/sh/generate-conditioned-ldm.sh path/to/vae.pt path/to/cond_unet.pt --class_label 7
 
-# Options: --guidance_scale FLOAT, --num_samples N, --mode ddim, --ddim_steps N
+# Options: --guidance_scale FLOAT, --num_samples N, --sampling_steps N, --eta FLOAT
+```
+
+### Conditioned Latent Diffusion samples (cross-attention)
+
+```bash
+# Generate one sample per class (0-9)
+bash scripts/sh/generate-conditioned-ldm-ca.sh path/to/vae.pt path/to/cond_unet_ca.pt
+
+# Generate specific digit class
+bash scripts/sh/generate-conditioned-ldm-ca.sh path/to/vae.pt path/to/cond_unet_ca.pt --class_label 7
+
+# Options: --guidance_scale FLOAT, --num_samples N, --sampling_steps N, --eta FLOAT
+```
+
+### Rectified Flow samples (pixel-space)
+
+Supports Euler (1st-order) and midpoint/Heun (2nd-order) ODE samplers:
+
+```bash
+bash scripts/sh/generate-rf.sh path/to/checkpoint.pt
+
+# Use midpoint (Heun) sampler for higher quality (default)
+bash scripts/sh/generate-rf.sh path/to/checkpoint.pt --sampler midpoint
+
+# Use Euler sampler
+bash scripts/sh/generate-rf.sh path/to/checkpoint.pt --sampler euler --sampling_steps 100
+
+# Options: --num_samples N, --nrow N, --sampling_steps N, --sampler {euler,midpoint}
+```
+
+### Latent Rectified Flow samples
+
+```bash
+bash scripts/sh/generate-latent-rf.sh path/to/vae.pt path/to/unet.pt
+
+# Use midpoint (Heun) sampler for higher quality (default)
+bash scripts/sh/generate-latent-rf.sh path/to/vae.pt path/to/unet.pt --sampler midpoint
+
+# Use Euler sampler with custom steps
+bash scripts/sh/generate-latent-rf.sh path/to/vae.pt path/to/unet.pt --sampler euler --sampling_steps 100
+
+# Options: --num_samples N, --nrow N, --sampling_steps N, --sampler {euler,midpoint}
+```
+
+### CFG guidance scale effect visualization
+
+Visualizes how classifier-free guidance strength (w) affects class-conditional image quality and diversity. Generates a grid where rows = digit classes, columns = guidance scales, and each cell shows multiple samples. Supports both conditioning approaches:
+
+```bash
+# Compare both models side by side:
+bash scripts/sh/visualize-cfg-effect.sh path/to/vae.pt \
+    --concat_checkpoint path/to/concat_unet.pt \
+    --cross_attention_checkpoint path/to/ca_unet.pt
+
+# Single model with custom scales:
+bash scripts/sh/visualize-cfg-effect.sh path/to/vae.pt \
+    --concat_checkpoint path/to/concat_unet.pt \
+    --guidance_scales 0.0 1.0 3.0 5.0 10.0 \
+    --samples_per_cell 10
+
+# Options: --guidance_scales FLOAT..., --samples_per_cell N, --sampling_steps N, --eta FLOAT, --seed N
+```
+
+### Debug conditioned generation
+
+Diagnostic script to debug conditioned LDM generation quality. Compares DDIM vs DDPM sampling, raw conditional vs CFG, analyzes learned embeddings, and checks gradient flow:
+
+```bash
+python -m scripts.python.debug_conditioned_generation \
+    --unet_checkpoint path/to/conditioned_unet.pt \
+    --vae_checkpoint path/to/vae.pt \
+    --output_dir ./debug_output \
+    --class_label 7
 ```
 
 ### UMAP distribution visualization
@@ -174,7 +311,7 @@ Generation scripts output to `generated_samples/` with per-sample subfolders con
 python -m pytest tests/ -v
 ```
 
-Tests covering UNet, DDPM, DDIM, VAE, and classifier-free guidance (output shapes, gradient flow, numerical stability, determinism, CFG formula, various configurations).
+Tests covering UNet, DDPM, DDIM, VAE, Rectified Flow, and classifier-free guidance (output shapes, gradient flow, numerical stability, determinism, CFG formula, various configurations).
 
 ## Project Structure
 
@@ -182,9 +319,10 @@ Tests covering UNet, DDPM, DDIM, VAE, and classifier-free guidance (output shape
 models/
   ddpm.py                       # DDPM forward/reverse diffusion (cosine schedule)
   ddim.py                       # DDIM sampler (reuses DDPM's noise network)
-  unet.py                       # UNet with timestep conditioning and self-attention
+  rectified_flow.py             # Rectified Flow: linear interpolation, velocity prediction, Euler sampling
+  unet.py                       # UNet with timestep conditioning, self-attention, and optional cross-attention
   vae.py                        # VAE encoder/decoder with diagonal Gaussian posterior
-  classifier_free_guidance.py   # CFG wrappers for class-conditioned generation
+  classifier_free_guidance.py   # CFG wrappers: channel-concat and cross-attention conditioning
   utils.py                      # Shared utilities: EMA, checkpointing, visualization
 
 scripts/
@@ -193,10 +331,18 @@ scripts/
     train_vae.py
     train_latent_diffusion.py
     train_conditioned_latent_diffusion.py
+    train_conditioned_latent_diffusion_ca.py  # Cross-attention variant
+    train_rf.py                              # Rectified Flow (pixel space)
+    train_latent_rf.py                       # Rectified Flow (latent space)
     generate_ddpm.py
     generate_latent_diffusion.py
     generate_conditioned_latent_diffusion.py
+    generate_conditioned_latent_diffusion_ca.py  # Cross-attention variant
+    generate_rf.py                               # Rectified Flow generation (pixel space)
+    generate_latent_rf.py                        # Rectified Flow generation (latent space)
     visualize_distribution.py
+    visualize_cfg_effect.py          # CFG guidance scale quality/diversity visualization
+    debug_conditioned_generation.py  # Diagnostic: embedding, gradient, sampling mode analysis
   sh/               # Shell wrappers (screen sessions, GPU monitoring)
 
 data/               # MNIST data loading (auto-download, normalized to [-1, 1])

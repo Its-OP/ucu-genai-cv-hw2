@@ -1,28 +1,5 @@
 """
 Latent Diffusion Model Sample Generation Script (DDPM / DDIM).
-
-Loads a trained latent UNet checkpoint and a pre-trained VAE checkpoint,
-generates MNIST digit samples by denoising in latent space, then decoding
-to pixel space via the VAE decoder.
-
-Pipeline:
-    1. Sample noise in latent space: z_T ~ N(0, I), shape (1, latent_channels, 4, 4)
-    2. Denoise via DDPM or DDIM reverse process: z_T -> z_0
-    3. Decode latent to pixel space: x_hat = VAE.decode(z_0), shape (1, 1, 32, 32)
-    4. Crop back to 28x28: remove the 2-pixel reflect padding
-
-Each sample is generated individually with per-sample timing, denoising
-step visualization, and dedicated subfolders. Output directories are
-timestamped to avoid overwriting previous runs.
-
-Usage:
-    python -m scripts.python.generate_latent_diffusion \\
-        --vae_checkpoint path/to/vae.pt \\
-        --unet_checkpoint path/to/unet.pt
-    python -m scripts.python.generate_latent_diffusion \\
-        --vae_checkpoint path/to/vae.pt \\
-        --unet_checkpoint path/to/unet.pt \\
-        --mode ddim --ddim_steps 50
 """
 import argparse
 import os
@@ -127,7 +104,6 @@ def decode_latent_to_pixel(
     Returns:
         Pixel images, shape (B, 1, 28, 28), in [-1, 1].
     """
-    # Unscale latents: z = z_scaled / scaling_factor
     unscaled_latent = latent / scaling_factor
     pixel_images = vae.decode(unscaled_latent)
     # Crop from 32x32 back to 28x28 (remove 2-pixel padding on each side)

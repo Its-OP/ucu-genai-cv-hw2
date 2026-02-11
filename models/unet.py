@@ -1,12 +1,5 @@
 """
-UNet noise prediction model for DDPM.
-
-Custom PyTorch implementation of a UNet2D architecture following
-Ho et al. 2020 "Denoising Diffusion Probabilistic Models", with
-automatic padding/cropping for MNIST's 28x28 images. Images are
-padded to 32x32 to support 4-level downsampling (32 -> 16 -> 8 -> 4).
-
-Components (bottom-up):
+Components:
     1. SinusoidalPositionEmbedding  — timestep -> sinusoidal vector
     2. TimestepEmbeddingMLP         — sinusoidal vector -> dense embedding
     3. ResidualBlock                — ResNet block with timestep conditioning
@@ -64,7 +57,6 @@ class SinusoidalPositionEmbedding(nn.Module):
         Returns:
             Sinusoidal embedding, shape (batch_size, embedding_dimension).
         """
-        # arguments shape: (batch_size, half_dim)
         arguments = timestep[:, None].float() * self.frequencies[None, :]
         # Concatenate sin and cos: (batch_size, embedding_dimension)
         embedding = torch.cat([torch.sin(arguments), torch.cos(arguments)], dim=-1)
@@ -144,7 +136,6 @@ class ResidualBlock(nn.Module):
     ):
         super().__init__()
 
-        # First convolution path: GroupNorm -> SiLU -> Conv3x3
         self.norm_1 = nn.GroupNorm(norm_num_groups, input_channels, eps=norm_epsilon)
         self.activation_1 = nn.SiLU()
         self.convolution_1 = nn.Conv2d(
@@ -157,7 +148,6 @@ class ResidualBlock(nn.Module):
             time_embedding_dimension, output_channels
         )
 
-        # Second convolution path: GroupNorm -> SiLU -> Dropout -> Conv3x3
         self.norm_2 = nn.GroupNorm(norm_num_groups, output_channels, eps=norm_epsilon)
         self.activation_2 = nn.SiLU()
         self.dropout = nn.Dropout(dropout_rate)
@@ -165,7 +155,6 @@ class ResidualBlock(nn.Module):
             output_channels, output_channels, kernel_size=3, padding=1
         )
 
-        # Residual shortcut: 1x1 conv when channel counts differ, identity otherwise
         if input_channels != output_channels:
             self.residual_convolution = nn.Conv2d(
                 input_channels, output_channels, kernel_size=1
@@ -186,7 +175,6 @@ class ResidualBlock(nn.Module):
         """
         residual = hidden_states
 
-        # First convolution path
         hidden_states = self.norm_1(hidden_states)
         hidden_states = self.activation_1(hidden_states)
         hidden_states = self.convolution_1(hidden_states)
@@ -196,7 +184,6 @@ class ResidualBlock(nn.Module):
         time_projection = self.time_embedding_projection(F.silu(time_embedding))
         hidden_states = hidden_states + time_projection[:, :, None, None]
 
-        # Second convolution path
         hidden_states = self.norm_2(hidden_states)
         hidden_states = self.activation_2(hidden_states)
         hidden_states = self.dropout(hidden_states)
@@ -243,12 +230,10 @@ class SelfAttentionBlock(nn.Module):
 
         self.group_norm = nn.GroupNorm(norm_num_groups, channels, eps=norm_epsilon)
 
-        # Q, K, V projections (Linear layers, matching diffusers convention)
         self.query_projection = nn.Linear(channels, channels)
         self.key_projection = nn.Linear(channels, channels)
         self.value_projection = nn.Linear(channels, channels)
 
-        # Output projection
         self.output_projection = nn.Linear(channels, channels)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
@@ -268,7 +253,6 @@ class SelfAttentionBlock(nn.Module):
         hidden_states = hidden_states.reshape(batch_size, channels, sequence_length)
         hidden_states = hidden_states.permute(0, 2, 1)
 
-        # Compute Q, K, V projections: (B, H*W, C)
         query = self.query_projection(hidden_states)
         key = self.key_projection(hidden_states)
         value = self.value_projection(hidden_states)
@@ -294,7 +278,6 @@ class SelfAttentionBlock(nn.Module):
             batch_size, sequence_length, channels
         )
 
-        # Output projection
         attention_output = self.output_projection(attention_output)
 
         # Reshape to spatial: (B, H*W, C) -> (B, C, H, W)
@@ -349,13 +332,10 @@ class CrossAttentionBlock(nn.Module):
 
         self.group_norm = nn.GroupNorm(norm_num_groups, channels, eps=norm_epsilon)
 
-        # Q projection from UNet features (channels -> channels)
         self.query_projection = nn.Linear(channels, channels)
-        # K, V projections from external context (context_dim -> channels)
         self.key_projection = nn.Linear(context_dim, channels)
         self.value_projection = nn.Linear(context_dim, channels)
 
-        # Output projection
         self.output_projection = nn.Linear(channels, channels)
 
     def forward(
@@ -378,10 +358,8 @@ class CrossAttentionBlock(nn.Module):
         hidden_states = hidden_states.reshape(batch_size, channels, sequence_length)
         hidden_states = hidden_states.permute(0, 2, 1)
 
-        # Q from UNet features: (B, H*W, C)
         query = self.query_projection(hidden_states)
 
-        # K, V from external context: (B, S, context_dim) -> (B, S, C)
         context_sequence_length = context.shape[1]
         key = self.key_projection(context)
         value = self.value_projection(context)
@@ -408,7 +386,6 @@ class CrossAttentionBlock(nn.Module):
             batch_size, sequence_length, channels
         )
 
-        # Output projection
         attention_output = self.output_projection(attention_output)
 
         # Reshape to spatial: (B, H*W, C) -> (B, C, H, W)

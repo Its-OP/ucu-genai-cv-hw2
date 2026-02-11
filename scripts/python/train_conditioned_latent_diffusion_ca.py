@@ -1,28 +1,5 @@
 """
 Cross-Attention Class-Conditioned Latent Diffusion Model Training Script for MNIST.
-
-Trains a UNet denoising model within the latent space of a pre-trained
-frozen VAE, with class conditioning via cross-attention and
-classifier-free guidance (Ho & Salimans 2022).
-
-Unlike the channel-concatenation approach (train_conditioned_latent_diffusion.py),
-this script uses cross-attention conditioning (Rombach et al. 2022):
-    - Class labels are embedded as dense vectors via nn.Embedding
-    - The embedding is injected into the UNet via cross-attention layers:
-        Q = W_q · features,  K = W_k · context,  V = W_v · context
-    - No extra input channel is needed (input_channels == output_channels)
-
-Pipeline:
-    1. Load frozen VAE from checkpoint (no gradients)
-    2. Encode training images to latent space: x -> z ~ q(z|x)
-    3. Embed class label as dense vector: label -> context (1, context_dim)
-    4. UNet predicts noise with cross-attention context: epsilon_theta(z_t, t; context)
-    5. Loss = MSE(epsilon, epsilon_theta)
-    6. Classifier-free dropout: randomly drop conditioning for 10% of samples
-
-Usage:
-    python -m scripts.python.train_conditioned_latent_diffusion_ca \
-        --vae_checkpoint path/to/vae.pt --epochs 100
 """
 import argparse
 import time

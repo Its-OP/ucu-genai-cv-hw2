@@ -68,7 +68,6 @@ class ExponentialMovingAverage:
 
     def __init__(self, model, decay=0.995):
         self.decay = decay
-        # Deep copy all parameters as shadow weights
         self.shadow_parameters = [
             parameter.clone().detach() for parameter in model.parameters()
         ]

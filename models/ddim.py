@@ -48,7 +48,6 @@ class DDIMSampler(nn.Module):
         self.ddim_timesteps = ddim_timesteps
         self.eta = eta
 
-        # Compute uniformly-spaced subsequence of DDPM timesteps
         timestep_sequence = self._make_ddim_timestep_sequence(
             ddpm_timesteps=ddpm.timesteps,
             ddim_timesteps=ddim_timesteps,
@@ -80,24 +79,6 @@ class DDIMSampler(nn.Module):
         alpha_cumprod_current: torch.Tensor,
         alpha_cumprod_previous: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        Compute the noise coefficient σ for a DDIM step.
-
-        Formula (Song et al. 2020):
-            σ_{τ_i} = η · √((1 - ᾱ_{τ_{i-1}}) / (1 - ᾱ_{τ_i}))
-                        · √(1 - ᾱ_{τ_i} / ᾱ_{τ_{i-1}})
-
-        When η = 0, σ = 0 and sampling is fully deterministic.
-        When η = 1, σ matches the DDPM posterior variance.
-
-        Args:
-            alpha_cumprod_current: ᾱ_{τ_i} at the current timestep.
-            alpha_cumprod_previous: ᾱ_{τ_{i-1}} at the target (previous) timestep.
-
-        Returns:
-            Noise coefficient σ (same shape as inputs).
-        """
-        # σ = η · √((1 - ᾱ_{τ_{i-1}}) / (1 - ᾱ_{τ_i})) · √(1 - ᾱ_{τ_i} / ᾱ_{τ_{i-1}})
         sigma = (
             self.eta
             * torch.sqrt((1.0 - alpha_cumprod_previous) / (1.0 - alpha_cumprod_current))

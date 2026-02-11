@@ -1,24 +1,3 @@
-"""
-Variational Autoencoder (VAE) for latent diffusion.
-
-Custom PyTorch implementation following the CompVis Latent Diffusion Model
-(Rombach et al. 2022). Compresses images (e.g., 1x32x32 padded MNIST) into
-a regularized Gaussian latent space (e.g., 2x4x4) suitable for training
-a diffusion model in the compressed representation.
-
-Components (bottom-up):
-    1.  VAEResidualBlock           — ResNet block (no timestep conditioning)
-    2.  VAEAttentionBlock          — multi-head self-attention with residual
-    3.  VAEDownsample              — strided convolution (spatial /2)
-    4.  VAEUpsample                — nearest interpolation + convolution (spatial *2)
-    5.  VAEEncoderBlock            — encoder level: ResNets + optional attention + optional downsample
-    6.  VAEDecoderBlock            — decoder level: ResNets + optional attention + optional upsample
-    7.  VAEMidBlock                — bottleneck: ResNet -> Attention -> ResNet
-    8.  DiagonalGaussianDistribution — latent posterior: mean, logvar, sample, kl
-    9.  VAEEncoder                 — full encoder network
-    10. VAEDecoder                 — full decoder network
-    11. VAE                        — public API: encode, decode, forward, loss
-"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -54,14 +33,12 @@ class VAEResidualBlock(nn.Module):
     ):
         super().__init__()
 
-        # First convolution path: GroupNorm -> SiLU -> Conv3x3
         self.norm_1 = nn.GroupNorm(norm_num_groups, input_channels, eps=norm_epsilon)
         self.activation_1 = nn.SiLU()
         self.convolution_1 = nn.Conv2d(
             input_channels, output_channels, kernel_size=3, padding=1
         )
 
-        # Second convolution path: GroupNorm -> SiLU -> Dropout -> Conv3x3
         self.norm_2 = nn.GroupNorm(norm_num_groups, output_channels, eps=norm_epsilon)
         self.activation_2 = nn.SiLU()
         self.dropout = nn.Dropout(dropout_rate)
@@ -69,7 +46,6 @@ class VAEResidualBlock(nn.Module):
             output_channels, output_channels, kernel_size=3, padding=1
         )
 
-        # Residual shortcut: 1x1 conv when channel counts differ, identity otherwise
         if input_channels != output_channels:
             self.residual_convolution = nn.Conv2d(
                 input_channels, output_channels, kernel_size=1
@@ -87,12 +63,10 @@ class VAEResidualBlock(nn.Module):
         """
         residual = hidden_states
 
-        # First convolution path
         hidden_states = self.norm_1(hidden_states)
         hidden_states = self.activation_1(hidden_states)
         hidden_states = self.convolution_1(hidden_states)
 
-        # Second convolution path
         hidden_states = self.norm_2(hidden_states)
         hidden_states = self.activation_2(hidden_states)
         hidden_states = self.dropout(hidden_states)
@@ -135,12 +109,10 @@ class VAEAttentionBlock(nn.Module):
 
         self.group_norm = nn.GroupNorm(norm_num_groups, channels, eps=norm_epsilon)
 
-        # Q, K, V projections (Linear layers, matching CompVis LDM convention)
         self.query_projection = nn.Linear(channels, channels)
         self.key_projection = nn.Linear(channels, channels)
         self.value_projection = nn.Linear(channels, channels)
 
-        # Output projection
         self.output_projection = nn.Linear(channels, channels)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
@@ -160,7 +132,6 @@ class VAEAttentionBlock(nn.Module):
         hidden_states = hidden_states.reshape(batch_size, channels, sequence_length)
         hidden_states = hidden_states.permute(0, 2, 1)
 
-        # Compute Q, K, V projections: (B, H*W, C)
         query = self.query_projection(hidden_states)
         key = self.key_projection(hidden_states)
         value = self.value_projection(hidden_states)
@@ -178,7 +149,6 @@ class VAEAttentionBlock(nn.Module):
         # Remove head dimension and reshape: (B, 1, H*W, C) -> (B, H*W, C)
         attention_output = attention_output.squeeze(1)
 
-        # Output projection
         attention_output = self.output_projection(attention_output)
 
         # Reshape to spatial: (B, H*W, C) -> (B, C, H, W)
@@ -429,13 +399,11 @@ class DiagonalGaussianDistribution:
     """
 
     def __init__(self, parameters: torch.Tensor):
-        # Split parameters into mean and log-variance along channel dimension
         self.mean, self.logvar = torch.chunk(parameters, 2, dim=1)
 
         # Clamp log-variance for numerical stability (CompVis LDM convention)
         self.logvar = torch.clamp(self.logvar, -30.0, 20.0)
 
-        # Precompute standard deviation and variance
         # var = exp(logvar), std = exp(0.5 * logvar)
         self.var = torch.exp(self.logvar)
         self.std = torch.exp(0.5 * self.logvar)
